@@ -27,6 +27,7 @@ import { OfflinePreloadButton } from "@/src/components/OfflinePreloadButton";
 import { renderTokenizedParagraph } from "@/src/lib/tokenizer";
 import { playTTS, stopTTS, updateTTSPlaybackRate } from "@/src/lib/audioPlayer";
 import { splitParagraphIntoSentences } from "@/src/utils/edgeTTS";
+import { lookupOfflineWord } from "@/src/data/offlineDict";
 import {
   ChevronLeft,
   ChevronRight,
@@ -200,6 +201,8 @@ export function VirtualPager() {
     setTtsSpeed,
     sentenceTranslations,
     saveSentenceTranslation,
+    offlineWordCache,
+    saveOfflineWord,
   } = useReaderStore();
 
   const scrollViewportRef = React.useRef<HTMLDivElement>(null);
@@ -284,6 +287,14 @@ export function VirtualPager() {
   const [expandedSentenceTrans, setExpandedSentenceTrans] = React.useState<Record<number, boolean>>({});
   const [loadingSentenceTrans, setLoadingSentenceTrans] = React.useState<Record<string, boolean>>({});
   const [sentenceTransErrors, setSentenceTransErrors] = React.useState<Record<string, string>>({});
+
+  // ✍️ 句读单句听打（Sentence Dictation）专属状态
+  const [sentenceDictationOpen, setSentenceDictationOpen] = React.useState<Record<number, boolean>>({});
+  const [sentenceDictationInputs, setSentenceDictationInputs] = React.useState<Record<number, string>>({});
+  const [sentenceDictationResults, setSentenceDictationResults] = React.useState<
+    Record<number, DictationResult | null>
+  >({});
+  const [sentenceDictationPeeks, setSentenceDictationPeeks] = React.useState<Record<number, boolean>>({});
 
   // 连续听读队列同步会话引用，避免异步回调闭包过期
   const continuousPlayRef = React.useRef<{
@@ -549,19 +560,81 @@ export function VirtualPager() {
     playNextStep(startSentIdx);
   };
 
-  // 句读面板：切换上一句 / 下一句（若正在单句或连续朗读则自动停止上一句）
+  // 句读面板：切换上一句 / 下一句（自动清空上一句听打内容与核对状态，若处于听打模式则自动播放新切换的这一句）
   const handleStepSentence = (
     paraIndex: number,
     nextIdx: number,
-    totalCount: number
+    totalCount: number,
+    sentencesList?: string[]
   ) => {
     const clampedIdx = Math.max(0, Math.min(nextIdx, totalCount - 1));
     if (sentencePlayingState?.paraIndex === paraIndex) {
       stopSentenceReaderAudio();
     }
     setSentenceIndices((prev) => ({ ...prev, [paraIndex]: clampedIdx }));
-    // 切换句子时默认收起中文译文，防剧透保護精读思考
+    // 切换句子时默认收起中文译文，防剧透保护精读思考
     setExpandedSentenceTrans((prev) => ({ ...prev, [paraIndex]: false }));
+    // 自动清空上一句的听打输入内容与核对结果，并恢复盲听模糊保护
+    setSentenceDictationInputs((prev) => ({ ...prev, [paraIndex]: "" }));
+    setSentenceDictationResults((prev) => ({ ...prev, [paraIndex]: null }));
+    setSentenceDictationPeeks((prev) => ({ ...prev, [paraIndex]: false }));
+
+    // 若当前处于“✍️ 听打本句”模式，切换到新句子时自动播放该句发音
+    if (sentenceDictationOpen[paraIndex] && sentencesList && sentencesList[clampedIdx]) {
+      handlePlaySingleSentence(sentencesList[clampedIdx], paraIndex, clampedIdx);
+    }
+  };
+
+  // 句读面板：开启 / 退出“✍️ 听打本句”模式
+  const handleToggleSentenceDictation = (
+    sentence: string,
+    paraIndex: number,
+    sentIdx: number
+  ) => {
+    const isCurrentlyOpen = !!sentenceDictationOpen[paraIndex];
+    if (isCurrentlyOpen) {
+      setSentenceDictationOpen((prev) => ({ ...prev, [paraIndex]: false }));
+      setSentenceDictationResults((prev) => ({ ...prev, [paraIndex]: null }));
+      setSentenceDictationPeeks((prev) => ({ ...prev, [paraIndex]: false }));
+      if (sentencePlayingState?.paraIndex === paraIndex) {
+        stopSentenceReaderAudio();
+      }
+      return;
+    }
+
+    // 开启单句听打：重置输入与结果、开启防偷看模糊、收起中文参考，并立即自动播放当前单句语音
+    setSentenceDictationOpen((prev) => ({ ...prev, [paraIndex]: true }));
+    setSentenceDictationInputs((prev) => ({ ...prev, [paraIndex]: "" }));
+    setSentenceDictationResults((prev) => ({ ...prev, [paraIndex]: null }));
+    setSentenceDictationPeeks((prev) => ({ ...prev, [paraIndex]: false }));
+    setExpandedSentenceTrans((prev) => ({ ...prev, [paraIndex]: false }));
+
+    handlePlaySingleSentence(sentence, paraIndex, sentIdx);
+  };
+
+  // 句读面板：核对本句听打内容（三色 Diff 比对并自动解除原句模糊）
+  const handleCheckSentenceDictation = (sentence: string, paraIndex: number) => {
+    const userInput = (sentenceDictationInputs[paraIndex] || "").trim();
+    if (!userInput) {
+      toast.warning("请输入您听到的英文句子后再核对");
+      return;
+    }
+
+    const cleanTarget = stripHtml(sentence);
+    const result = computeDictationDiff(cleanTarget, userInput);
+    setSentenceDictationResults((prev) => ({ ...prev, [paraIndex]: result }));
+    // 核对完成后自动解除上方原句的模糊遮盖
+    setSentenceDictationPeeks((prev) => ({ ...prev, [paraIndex]: true }));
+
+    if (result.accuracy === 100) {
+      toast.success("🏆 太棒了！本句听打全对，准确率 100%！🎉");
+    } else if (result.accuracy >= 80) {
+      toast.info(`🎉 本句听打完成！准确率 ${result.accuracy}%，非常优秀！💪`);
+    } else {
+      toast.info(
+        `💪 本句听打完成！准确率 ${result.accuracy}%，点击拼错/遗漏的词可直接收入生词本。`
+      );
+    }
   };
 
   // 句读面板：按需获取并缓存单句中文参考译文
@@ -752,23 +825,54 @@ export function VirtualPager() {
     }
   };
 
-  // 一键将听写错词或生词存入生词本
-  const handleAddDictationVocab = (word: string, rawPara: string, index: number) => {
-    const cleanWord = word.replace(/[^a-zA-Z]/g, "").trim();
+  // 一键将听写错词或生词存入生词本（联动离线词典与在线查词获取真实释义）
+  const handleAddDictationVocab = async (
+    word: string,
+    rawContext: string,
+    index: number,
+    sourceNote = "来自听写练习中的遗漏/拼错词汇"
+  ) => {
+    const cleanWord = word.replace(/[^a-zA-Z'-]/g, "").replace(/^['-]+|['-]+$/g, "").trim();
     if (!cleanWord) return;
+
+    const lowerWord = cleanWord.toLowerCase();
+    const contextSnippet = stripHtml(rawContext).slice(0, 180);
+
+    // 1. 优先从本地预载词库或内置核心离线词典匹配释义
+    const offlineMatch = lookupOfflineWord(lowerWord);
+    let resolvedTranslation: string =
+      (offlineWordCache && offlineWordCache[lowerWord]) ||
+      (offlineMatch ? offlineMatch.translation : "") ||
+      "";
+
+    // 2. 若本地未命中且当前在线，快速请求查词接口补全中文释义
+    if (!resolvedTranslation && typeof navigator !== "undefined" && navigator.onLine) {
+      try {
+        const res = await fetch(`/api/translate?word=${encodeURIComponent(cleanWord)}`);
+        const data = await res.json().catch(() => ({}));
+        if (res.ok && data?.success && data?.translation) {
+          resolvedTranslation = data.translation;
+          saveOfflineWord(lowerWord, data.translation);
+        }
+      } catch {
+        // 忽略网络波动，使用兜底标注
+      }
+    }
+
+    const finalTranslation = resolvedTranslation || "听写重点生词";
 
     addVocab({
       word: cleanWord,
-      translation: "听写复习生词",
-      context: stripHtml(rawPara).slice(0, 160),
+      translation: finalTranslation,
+      context: contextSnippet,
       paragraphIndex: index,
       bookId: currentBook.id,
       bookTitle: currentBook.title,
-      note: "来自段落听写练习中的遗漏/拼错词汇",
+      note: sourceNote,
     });
 
     toast.success(`已将 "${cleanWord}" 添加至生词本！`, {
-      description: "可在生词本或 3D 闪卡中进行艾宾浩斯复习巩固。",
+      description: `${finalTranslation} · 可在生词本或 3D 闪卡中复习巩固。`,
     });
   };
 
@@ -950,7 +1054,7 @@ export function VirtualPager() {
           ref={scrollViewportRef}
           className="h-[620px] w-full rounded-lg border border-border/60 bg-background/60 p-6 sm:p-8 overflow-y-auto scroll-smooth"
         >
-          <div className="space-y-6 font-serif text-[17px] sm:text-[18px] leading-[1.85] text-foreground max-w-3xl mx-auto">
+          <div className="space-y-7 pt-3 font-serif text-[17px] sm:text-[18px] leading-[1.85] text-foreground max-w-3xl mx-auto">
             {currentParagraphs.map((para, index) => {
               const globalIndex = startIndex + index;
               const isSpeaking = activePlayingIndex === globalIndex;
@@ -993,7 +1097,7 @@ export function VirtualPager() {
                   onClick={() => {
                     setActiveParagraphIndex((prev) => (prev === globalIndex ? null : globalIndex));
                   }}
-                  className={`group relative pl-8 sm:pl-10 pr-2 sm:pr-36 rounded-r-lg cursor-pointer sm:cursor-default transition-all duration-300 ${
+                  className={`group relative pl-8 sm:pl-10 pr-2 sm:pr-4 rounded-r-lg cursor-pointer sm:cursor-default transition-all duration-300 ${
                     isPulseTarget
                       ? "border-l-4 border-primary bg-primary/10 ring-2 ring-primary/40 rounded-md py-2.5 shadow-sm transition-all duration-700"
                       : isDictating || isSentenceReaderOpen
@@ -1022,10 +1126,10 @@ export function VirtualPager() {
                     {String(globalIndex + 1).padStart(2, "0")}
                   </span>
 
-                  {/* 悬浮/移动端轻量操作栏 (包含：🔊 朗读 | 🔍 句读 | 译 整段翻译 | 🎧 听写 | 🔖 动态书签 | 📝 随笔) */}
+                  {/* 悬浮/移动端轻量操作栏：桌面端上移至段落右上方 -top-7 right-2，彻底避免遮挡第一行末尾文字 */}
                   <div
                     onClick={(e) => e.stopPropagation()}
-                    className={`items-center justify-end gap-2 sm:gap-1 mb-1.5 sm:mb-0 sm:absolute sm:right-1 sm:top-1.5 p-1 rounded-lg sm:rounded-md border border-border/50 sm:border-border/60 bg-card/80 sm:bg-card/90 backdrop-blur-xs shadow-2xs sm:shadow-xs z-20 transition-all ${
+                    className={`items-center justify-end gap-2 sm:gap-1 mb-1.5 sm:mb-0 sm:absolute sm:-top-7 sm:right-2 before:content-[''] before:hidden sm:before:block before:absolute before:-bottom-3 before:left-0 before:right-0 before:h-3 p-1 rounded-lg sm:rounded-md border border-border/50 sm:border-border/60 bg-card/85 sm:bg-card/95 backdrop-blur-xs shadow-2xs sm:shadow-xs z-20 transition-all ${
                       isSpeaking || isSentenceReaderOpen
                         ? "flex opacity-100"
                         : activeParagraphIndex === globalIndex
@@ -1158,7 +1262,7 @@ export function VirtualPager() {
                   {/* 已收藏书签常驻右侧静默徽标（桌面端非悬浮时可见） */}
                   {isBookmarked && (
                     <span
-                      className="absolute right-2 top-2 text-amber-500/80 pointer-events-none group-hover:opacity-0 transition-opacity hidden sm:inline"
+                      className="absolute right-2 -top-5 text-amber-500/80 pointer-events-none group-hover:opacity-0 transition-opacity hidden sm:inline"
                       title="已设为书签"
                     >
                       <Bookmark className="w-3.5 h-3.5 fill-current" />
@@ -1273,6 +1377,14 @@ export function VirtualPager() {
                       (totalSentences === 1 ? bookTranslations[globalIndex] : undefined) ||
                       sentenceTransErrors[cleanSentenceKey];
 
+                    // ✍️ 单句听打状态与防偷看模糊判定
+                    const isSentDictating = !!sentenceDictationOpen[globalIndex];
+                    const sentDictationInput = sentenceDictationInputs[globalIndex] || "";
+                    const sentDictationResult = sentenceDictationResults[globalIndex] || null;
+                    const isSentPeeked = !!sentenceDictationPeeks[globalIndex];
+                    const isSentBlurred =
+                      isSentDictating && !isSentPeeked && !sentDictationResult;
+
                     return (
                       <div
                         onClick={(e) => e.stopPropagation()}
@@ -1355,7 +1467,12 @@ export function VirtualPager() {
                                   type="button"
                                   onClick={(e) => {
                                     e.stopPropagation();
-                                    handleStepSentence(globalIndex, sIdx, totalSentences);
+                                    handleStepSentence(
+                                      globalIndex,
+                                      sIdx,
+                                      totalSentences,
+                                      sentences
+                                    );
                                   }}
                                   className={`h-5 min-w-[22px] px-1.5 rounded text-[11px] font-mono transition-all cursor-pointer ${
                                     isPlayingDot
@@ -1373,15 +1490,21 @@ export function VirtualPager() {
                           </div>
                         )}
 
-                        {/* b) 核心展示区：大号衬线字体醒目展示当前选中单句，内部英文单词包裹 <InteractiveWord> */}
+                        {/* b) 核心展示区：大号衬线字体醒目展示当前选中单句，内部英文单词包裹 <InteractiveWord>（支持听打盲听模糊防偷看） */}
                         <div
-                          className={`p-3.5 sm:p-4 rounded-lg border transition-all duration-300 ${
+                          className={`relative p-3.5 sm:p-4 rounded-lg border transition-all duration-300 ${
                             isThisSentPlaying
                               ? "bg-amber-100/50 dark:bg-amber-950/35 border-amber-500/60 ring-2 ring-amber-500/30 shadow-xs"
                               : "bg-background/85 border-amber-500/25 shadow-2xs"
                           }`}
                         >
-                          <div className="text-lg font-serif leading-relaxed text-foreground select-text">
+                          <div
+                            className={`text-lg font-serif leading-relaxed text-foreground select-text transition-all duration-300 ${
+                              isSentBlurred
+                                ? "filter blur-md select-none opacity-40 pointer-events-none"
+                                : ""
+                            }`}
+                          >
                             {renderTokenizedParagraph(
                               currentSentence,
                               currentSentence,
@@ -1389,9 +1512,49 @@ export function VirtualPager() {
                               globalIndex
                             )}
                           </div>
+
+                          {/* 防偷看盲听保护悬浮按钮：[👀 偷看一眼] / [🙈 恢复遮盖] */}
+                          {isSentDictating && !sentDictationResult && (
+                            <div
+                              className={`${
+                                isSentBlurred
+                                  ? "absolute inset-0 flex items-center justify-center z-10"
+                                  : "mt-2 flex items-center justify-end"
+                              }`}
+                            >
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setSentenceDictationPeeks((prev) => ({
+                                    ...prev,
+                                    [globalIndex]: !prev[globalIndex],
+                                  }));
+                                }}
+                                className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-serif bg-card/95 backdrop-blur-xs border border-amber-500/40 text-amber-900 dark:text-amber-100 hover:bg-amber-500/15 shadow-xs cursor-pointer transition-all"
+                                title={
+                                  isSentBlurred
+                                    ? "临时取消模糊偷看一眼原句"
+                                    : "恢复原句模糊进入盲听状态"
+                                }
+                              >
+                                {isSentBlurred ? (
+                                  <>
+                                    <Eye className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" />
+                                    <span>👀 偷看一眼</span>
+                                  </>
+                                ) : (
+                                  <>
+                                    <EyeOff className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" />
+                                    <span>🙈 恢复盲听遮盖</span>
+                                  </>
+                                )}
+                              </button>
+                            </div>
+                          )}
                         </div>
 
-                        {/* c) 核心控制栏：[▶ 听这一句] | [⏮ 上一句] / [⏭ 下一句] | [🔁 从本句连续听读] | [⏹ 停止] */}
+                        {/* c) 核心控制栏：[▶ 听这一句] | [⏮ 上一句] / [⏭ 下一句] | [✍️ 听打本句] | [🔁 从本句连续听读] | [⏹ 停止] */}
                         <div className="flex flex-wrap items-center justify-between gap-2 pt-0.5">
                           <div className="flex flex-wrap items-center gap-1.5 sm:gap-2">
                             {/* [▶ 听这一句] */}
@@ -1423,7 +1586,8 @@ export function VirtualPager() {
                                 handleStepSentence(
                                   globalIndex,
                                   currentSentIdx - 1,
-                                  totalSentences
+                                  totalSentences,
+                                  sentences
                                 );
                               }}
                               className="h-8 px-2.5 text-xs font-serif gap-1 border-amber-500/35 bg-background/80 hover:bg-amber-500/10 cursor-pointer disabled:opacity-40"
@@ -1443,7 +1607,8 @@ export function VirtualPager() {
                                 handleStepSentence(
                                   globalIndex,
                                   currentSentIdx + 1,
-                                  totalSentences
+                                  totalSentences,
+                                  sentences
                                 );
                               }}
                               className="h-8 px-2.5 text-xs font-serif gap-1 border-amber-500/35 bg-background/80 hover:bg-amber-500/10 cursor-pointer disabled:opacity-40"
@@ -1451,6 +1616,32 @@ export function VirtualPager() {
                             >
                               <span>⏭ 下一句</span>
                               <SkipForward className="w-3.5 h-3.5" />
+                            </Button>
+
+                            {/* [✍️ 听打本句] / [👁️ 退出听打] */}
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleToggleSentenceDictation(
+                                  currentSentence,
+                                  globalIndex,
+                                  currentSentIdx
+                                );
+                              }}
+                              className={`h-8 px-3 text-xs font-serif gap-1.5 cursor-pointer transition-all ${
+                                isSentDictating
+                                  ? "bg-amber-600/20 text-amber-950 dark:text-amber-100 font-bold border-amber-600/60 shadow-2xs"
+                                  : "border-amber-500/40 bg-background/80 hover:bg-amber-500/15 text-foreground"
+                              }`}
+                              title={
+                                isSentDictating
+                                  ? "退出单句盲听打字模式"
+                                  : "开启本句盲听打字与三色 Diff 核对"
+                              }
+                            >
+                              <span>{isSentDictating ? "👁️ 退出听打" : "✍️ 听打本句"}</span>
                             </Button>
 
                             {/* [🔁 从本句连续听读] */}
@@ -1493,6 +1684,244 @@ export function VirtualPager() {
                             </Button>
                           </div>
                         </div>
+
+                        {/* ✍️ 单句听打输入框与三色精密 Diff 比对面板 */}
+                        {isSentDictating && (
+                          <div className="pt-2 border-t border-amber-500/25 space-y-3 animate-in fade-in-50 duration-200">
+                            {!sentDictationResult ? (
+                              <div className="space-y-2.5">
+                                <Textarea
+                                  value={sentDictationInput}
+                                  onClick={(e) => e.stopPropagation()}
+                                  onChange={(e) => {
+                                    const val = e.target.value;
+                                    setSentenceDictationInputs((prev) => ({
+                                      ...prev,
+                                      [globalIndex]: val,
+                                    }));
+                                  }}
+                                  onKeyDown={(e) => {
+                                    if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+                                      e.preventDefault();
+                                      e.stopPropagation();
+                                      handleCheckSentenceDictation(currentSentence, globalIndex);
+                                    } else if (
+                                      (e.metaKey || e.ctrlKey) &&
+                                      (e.key === "r" || e.key === "R")
+                                    ) {
+                                      e.preventDefault();
+                                      e.stopPropagation();
+                                      handlePlaySingleSentence(
+                                        currentSentence,
+                                        globalIndex,
+                                        currentSentIdx
+                                      );
+                                    }
+                                  }}
+                                  placeholder="倾听本句发音，输入您听到的英文句子...（快捷键：Cmd/Ctrl + Enter 核对；Cmd/Ctrl + R 重听本句）"
+                                  className="min-h-[80px] bg-background/95 font-serif text-sm sm:text-base leading-relaxed resize-y border-amber-500/35 focus-visible:ring-amber-500"
+                                  autoFocus
+                                />
+                                <div className="flex flex-wrap items-center justify-between gap-2">
+                                  <span className="text-[11px] text-muted-foreground font-serif">
+                                    💡 忽略大小写与标点符号差异，核对后点击红/黄词汇可一键加入生词本
+                                  </span>
+                                  <div className="flex items-center gap-2">
+                                    <Button
+                                      variant="outline"
+                                      size="sm"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        handlePlaySingleSentence(
+                                          currentSentence,
+                                          globalIndex,
+                                          currentSentIdx
+                                        );
+                                      }}
+                                      className="h-8 px-3 text-xs font-serif gap-1.5 border-amber-500/40 bg-background/85 hover:bg-amber-500/15 cursor-pointer"
+                                      title="重新播放本句发音 (Cmd/Ctrl + R)"
+                                    >
+                                      <RotateCcw className="w-3.5 h-3.5" />
+                                      <span>🔁 重听本句</span>
+                                    </Button>
+                                    <Button
+                                      size="sm"
+                                      disabled={!sentDictationInput.trim()}
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        handleCheckSentenceDictation(currentSentence, globalIndex);
+                                      }}
+                                      className="h-8 px-3.5 text-xs font-serif gap-1.5 bg-amber-600 hover:bg-amber-700 text-white shadow-2xs cursor-pointer disabled:opacity-40"
+                                      title="提交并运行三色 Diff 核对 (Cmd/Ctrl + Enter)"
+                                    >
+                                      <CheckCircle2 className="w-3.5 h-3.5" />
+                                      <span>✅ 核对本句</span>
+                                    </Button>
+                                  </div>
+                                </div>
+                              </div>
+                            ) : (
+                              <div className="space-y-3 bg-background/85 rounded-lg p-3.5 border border-amber-500/30 shadow-2xs">
+                                {/* 准确率得分与快捷闯关操作栏 */}
+                                <div className="flex flex-wrap items-center justify-between gap-2 pb-2 border-b border-border/50">
+                                  <div className="flex flex-wrap items-center gap-2 text-xs font-serif">
+                                    <span
+                                      className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full font-bold border ${
+                                        sentDictationResult.accuracy >= 85
+                                          ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border-emerald-500/30"
+                                          : sentDictationResult.accuracy >= 60
+                                          ? "bg-amber-500/15 text-amber-700 dark:text-amber-300 border-amber-500/30"
+                                          : "bg-red-500/15 text-red-700 dark:text-red-300 border-red-500/30"
+                                      }`}
+                                    >
+                                      🏆 本句准确率：{sentDictationResult.accuracy}% (正确{" "}
+                                      {sentDictationResult.correctCount} / 共{" "}
+                                      {sentDictationResult.totalWords} 词)
+                                    </span>
+                                  </div>
+
+                                  <div className="flex items-center gap-2">
+                                    {/* [🔄 重练本句] */}
+                                    <Button
+                                      variant="outline"
+                                      size="sm"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        setSentenceDictationInputs((prev) => ({
+                                          ...prev,
+                                          [globalIndex]: "",
+                                        }));
+                                        setSentenceDictationResults((prev) => ({
+                                          ...prev,
+                                          [globalIndex]: null,
+                                        }));
+                                        setSentenceDictationPeeks((prev) => ({
+                                          ...prev,
+                                          [globalIndex]: false,
+                                        }));
+                                        handlePlaySingleSentence(
+                                          currentSentence,
+                                          globalIndex,
+                                          currentSentIdx
+                                        );
+                                      }}
+                                      className="h-7 px-2.5 text-xs font-serif gap-1 border-amber-500/40 hover:bg-amber-500/15 cursor-pointer"
+                                      title="清空本句输入并重新盲听练习"
+                                    >
+                                      <RotateCcw className="w-3 h-3" />
+                                      <span>🔄 重练本句</span>
+                                    </Button>
+
+                                    {/* [⏭ 听打下一句] */}
+                                    <Button
+                                      size="sm"
+                                      disabled={currentSentIdx >= totalSentences - 1}
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        handleStepSentence(
+                                          globalIndex,
+                                          currentSentIdx + 1,
+                                          totalSentences,
+                                          sentences
+                                        );
+                                      }}
+                                      className="h-7 px-2.5 text-xs font-serif gap-1 bg-amber-600 hover:bg-amber-700 text-white shadow-2xs cursor-pointer disabled:opacity-40"
+                                      title="切换到下一句并自动播放语音继续听打"
+                                    >
+                                      <span>⏭ 听打下一句</span>
+                                      <SkipForward className="w-3 h-3" />
+                                    </Button>
+                                  </div>
+                                </div>
+
+                                {/* 三色精密 Diff 词汇逐一渲染（支持红/黄词汇点击查词并一键加入生词本） */}
+                                <div className="p-2.5 rounded-md bg-muted/20 border border-border/50 font-serif text-base leading-relaxed flex flex-wrap gap-1.5 items-baseline">
+                                  {sentDictationResult.diff.map((token, tIdx) => {
+                                    if (token.type === "correct") {
+                                      return (
+                                        <span
+                                          key={tIdx}
+                                          className="text-emerald-700 dark:text-emerald-400 font-semibold px-1 rounded"
+                                        >
+                                          {token.word}
+                                        </span>
+                                      );
+                                    }
+                                    if (token.type === "wrong") {
+                                      return (
+                                        <button
+                                          key={tIdx}
+                                          type="button"
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            handleAddDictationVocab(
+                                              token.expected || token.word,
+                                              currentSentence,
+                                              globalIndex,
+                                              "来自「🔍句读 · ✍️单句听打」错词记录"
+                                            );
+                                          }}
+                                          title={`拼写错误或多余词汇 · 点击查词并将 "${token.expected || token.word}" 一键加入生词本`}
+                                          className="inline-flex items-center gap-1 bg-red-500/15 text-red-600 dark:text-red-400 px-1.5 py-0.5 rounded text-sm hover:bg-red-500/25 transition-colors cursor-pointer border border-red-500/20 group/sdiff"
+                                        >
+                                          <span className="line-through decoration-red-500/80">
+                                            {token.word}
+                                          </span>
+                                          {token.expected && (
+                                            <span className="text-emerald-700 dark:text-emerald-300 font-semibold underline decoration-emerald-500">
+                                              → {token.expected}
+                                            </span>
+                                          )}
+                                          <span className="text-[10px] text-primary opacity-0 group-hover/sdiff:opacity-100 transition-opacity font-mono">
+                                            ➕存生词
+                                          </span>
+                                        </button>
+                                      );
+                                    }
+                                    return (
+                                      <button
+                                        key={tIdx}
+                                        type="button"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          handleAddDictationVocab(
+                                            token.word,
+                                            currentSentence,
+                                            globalIndex,
+                                            "来自「🔍句读 · ✍️单句听打」漏词记录"
+                                          );
+                                        }}
+                                        title={`遗漏未写词汇 · 点击查词并将 "${token.word}" 一键加入生词本`}
+                                        className="bg-amber-500/20 text-amber-800 dark:text-amber-300 border-b-2 border-amber-500 px-1.5 py-0.5 rounded text-sm font-semibold hover:bg-amber-500/30 transition-colors cursor-pointer inline-flex items-center gap-1 group/sdiff"
+                                      >
+                                        <span>{token.word}</span>
+                                        <span className="text-[10px] text-amber-700 dark:text-amber-300 opacity-0 group-hover/sdiff:opacity-100 transition-opacity font-mono">
+                                          ➕存生词
+                                        </span>
+                                      </button>
+                                    );
+                                  })}
+                                </div>
+
+                                {/* 三色图例说明 */}
+                                <div className="flex flex-wrap items-center gap-3 text-[11px] text-muted-foreground font-serif">
+                                  <span className="inline-flex items-center gap-1">
+                                    <span className="w-2 h-2 rounded-full bg-emerald-500 inline-block" />
+                                    绿色：拼写正确
+                                  </span>
+                                  <span className="inline-flex items-center gap-1">
+                                    <span className="w-2 h-2 rounded-full bg-red-500 inline-block" />
+                                    红色删除线：拼写错误或多余（点击入生词本）
+                                  </span>
+                                  <span className="inline-flex items-center gap-1">
+                                    <span className="w-2 h-2 rounded-full bg-amber-500 inline-block" />
+                                    黄色底色：遗漏未写（点击入生词本）
+                                  </span>
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        )}
 
                         {/* d) 单句中文按需展开（防剧透） */}
                         <div className="pt-1 border-t border-amber-500/20">
