@@ -302,6 +302,9 @@ export function VirtualPager() {
   // ✂️ 意群斜杠断句与主干透视开关状态
   const [isChunkingMode, setIsChunkingMode] = React.useState<boolean>(false);
 
+  // 📱 手机端句读控制栏“⋯ 更多”折叠状态（桌面端始终全部展开）
+  const [showMoreControls, setShowMoreControls] = React.useState<boolean>(false);
+
   // 🎙️ 原声跟读对比与 🎯 智能跟读打分状态与引用
   const [recordingParaIndex, setRecordingParaIndex] = React.useState<number | null>(null);
   const [shadowingAudioUrls, setShadowingAudioUrls] = React.useState<Record<number, string>>({});
@@ -1629,7 +1632,7 @@ export function VirtualPager() {
       <CardContent className="p-6">
         <div
           ref={scrollViewportRef}
-          className="h-[620px] w-full rounded-lg border border-border/60 bg-background/60 p-6 sm:p-8 overflow-y-auto scroll-smooth"
+          className="h-[calc(100dvh-14rem)] min-h-[420px] max-h-[860px] w-full rounded-lg border border-border/60 bg-background/60 p-6 sm:p-8 overflow-y-auto scroll-smooth"
         >
           <div className="space-y-7 pt-3 font-serif text-[17px] sm:text-[18px] leading-[1.85] text-foreground max-w-3xl mx-auto">
             {currentParagraphs.map((para, index) => {
@@ -2313,6 +2316,21 @@ export function VirtualPager() {
                               <SkipForward className="w-3.5 h-3.5" />
                             </Button>
 
+                            {/* 手机端“⋯ 更多 / 收起”开关：折叠 ✍️听打本句 与 🔁连续听读，桌面端隐藏 */}
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              aria-expanded={showMoreControls}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setShowMoreControls((prev) => !prev);
+                              }}
+                              className="sm:hidden h-9 min-w-[36px] px-2.5 text-xs font-serif gap-1 border-amber-500/35 bg-background/80 hover:bg-amber-500/10 cursor-pointer"
+                              title={showMoreControls ? "收起更多功能" : "展开更多功能：听打本句、连续听读"}
+                            >
+                              <span>{showMoreControls ? "收起" : "⋯ 更多"}</span>
+                            </Button>
+
                             {/* [✍️ 听打本句] / [👁️ 退出听打] */}
                             <Button
                               variant="outline"
@@ -2329,6 +2347,10 @@ export function VirtualPager() {
                                 isSentDictating
                                   ? "bg-amber-600/20 text-amber-950 dark:text-amber-100 font-bold border-amber-600/60 shadow-2xs"
                                   : "border-amber-500/40 bg-background/80 hover:bg-amber-500/15 text-foreground"
+                              } ${
+                                showMoreControls || isSentDictating || isContinuousMode
+                                  ? ""
+                                  : "hidden sm:inline-flex"
                               }`}
                               title={
                                 isSentDictating
@@ -2355,6 +2377,10 @@ export function VirtualPager() {
                                 isContinuousMode
                                   ? "bg-amber-500/20 text-amber-900 dark:text-amber-100 font-bold border-amber-500"
                                   : "bg-background/80 hover:bg-amber-500/15 text-foreground"
+                              } ${
+                                showMoreControls || isSentDictating || isContinuousMode
+                                  ? ""
+                                  : "hidden sm:inline-flex"
                               }`}
                               title="从当前选中句开始，自动一句接一句连续播放至本段末尾"
                             >
@@ -2376,7 +2402,14 @@ export function VirtualPager() {
                                 e.stopPropagation();
                                 stopSentenceReaderAudio();
                               }}
-                              className="h-8 px-2.5 text-xs font-serif gap-1 border-destructive/40 text-destructive hover:bg-destructive/10 cursor-pointer disabled:opacity-40"
+                              className={`h-8 px-2.5 text-xs font-serif gap-1 border-destructive/40 text-destructive hover:bg-destructive/10 cursor-pointer disabled:opacity-40 ${
+                                isThisParaSentencePlaying ||
+                                activePlayingIndex === globalIndex ||
+                                isPlayingUserAudio ||
+                                isEchoComparing
+                                  ? ""
+                                  : "hidden sm:inline-flex"
+                              }`}
                               title="立即中断当前音频流、回声对比或连续听读队列"
                             >
                               <Square className="w-3 h-3 fill-current" />
@@ -2514,6 +2547,16 @@ export function VirtualPager() {
                                     </span>
                                   </div>
                                 </div>
+
+                                {/* 简化评分提示：未启用语音识别时，分数仅基于语速与停顿，逐词诊断仅供参考 */}
+                                {currentEvalResult.usedAcousticFallback && (
+                                  <div className="flex items-start gap-1.5 px-2.5 py-1.5 rounded-md bg-amber-500/10 border border-amber-500/30 text-[11px] font-serif text-amber-900 dark:text-amber-200">
+                                    <span>⚠️</span>
+                                    <span>
+                                      当前为<b>简化评分</b>：未能识别到语音内容（浏览器不支持语音识别、离线或声音过小），分数仅依据语速与停顿，逐词诊断仅供参考。建议使用 Chrome / Edge 并保持联网以获得完整评测。
+                                    </span>
+                                  </div>
+                                )}
 
                                 {/* 逐词发音红绿灯诊断区 */}
                                 {currentEvalResult.wordItems.length > 0 && (

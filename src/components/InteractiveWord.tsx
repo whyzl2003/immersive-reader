@@ -35,7 +35,7 @@ interface InteractiveWordProps {
   paragraphIndex?: number;
 }
 
-export function InteractiveWord({
+function InteractiveWordInner({
   word,
   displayToken,
   context,
@@ -61,16 +61,18 @@ export function InteractiveWord({
   const wordAutoStopTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
   const wordAudioUrlRef = React.useRef<string | null>(null);
 
-  const { addVocab, vocabularyList, offlineWordCache, saveOfflineWord } = useReaderStore();
+  // 细粒度订阅：action 引用稳定，仅 isSaved 布尔值变化才触发本词重渲染
+  const addVocab = useReaderStore((s) => s.addVocab);
+  const saveOfflineWord = useReaderStore((s) => s.saveOfflineWord);
 
   const cleanWord = word.trim().replace(/^['"“‘—\-]+|['"”’—\-]+$/g, "");
   const lowerWord = cleanWord.toLowerCase();
   const textToShow = displayToken ?? word;
 
-  // 判断是否已收录进生词本
-  const isSaved = React.useMemo(() => {
-    return vocabularyList.some((v) => v.word.toLowerCase() === lowerWord);
-  }, [vocabularyList, lowerWord]);
+  // 判断是否已收录进生词本（selector 直接返回布尔值，避免生词本数组引用变化引发全页重渲染）
+  const isSaved = useReaderStore((s) =>
+    s.vocabularyList.some((v) => v.word.toLowerCase() === lowerWord)
+  );
 
   // 停止单词录音并清理硬件资源
   const stopWordRecording = React.useCallback((abortEval = false) => {
@@ -288,7 +290,8 @@ export function InteractiveWord({
       return;
     }
 
-    // 3.2 离线优先：命中本地生词本已存释义
+    // 3.2 离线优先：命中本地生词本已存释义（点击时才即时读取最新 store，不订阅整个 store）
+    const { vocabularyList, offlineWordCache } = useReaderStore.getState();
     const vocabItem = vocabularyList.find((v) => v.word.toLowerCase() === lowerWord);
     if (vocabItem && vocabItem.translation) {
       setTranslation(vocabItem.translation);
@@ -459,6 +462,14 @@ export function InteractiveWord({
                     <span className="truncate text-foreground/85">
                       {"⭐".repeat(Math.max(1, wordEvalResult.stars))}
                     </span>
+                    {wordEvalResult.usedAcousticFallback && (
+                      <span
+                        className="shrink-0 px-1 py-0.5 rounded bg-amber-500/15 text-amber-800 dark:text-amber-200 border border-amber-500/30"
+                        title="未识别到语音内容（浏览器不支持、离线或声音过小），仅依据声音时长与节奏估算，分数仅供参考"
+                      >
+                        简化评分
+                      </span>
+                    )}
                   </div>
                   {wordAudioUrl && (
                     <button
@@ -567,3 +578,6 @@ export function InteractiveWord({
     </Popover>
   );
 }
+
+// memo 包装：props 均为原始类型，浅比较即可。避免朗读/录音等状态切换时，整页几百个单词跟随父组件重渲染
+export const InteractiveWord = React.memo(InteractiveWordInner);
