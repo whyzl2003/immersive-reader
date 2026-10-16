@@ -1,7 +1,7 @@
-# 任务清单：3D 记忆闪卡与我的笔记视图组件化重构
+# 任务清单：新增“🔍 句读（Sentence Reader 逐句精读与多档变速跟读）”
 
-- [x] 完善 Zustand 数据层：在 `src/store/useReaderStore.ts` 中新增 `vocabularyList` 与 `notesList`，配置 `persist` 中间件实现 localStorage 本地持久化与刷新不丢失 <!-- id: 50 -->
-- [x] 重构“📒 我的笔记”视图 (NotesView.tsx)：订阅 `notesList`，渲染卡片流与时间戳/引用原文，复刻修复后的无乱码 Markdown 导出逻辑（Blob 下载） <!-- id: 51 -->
-- [x] 重构“🎴 3D 记忆闪卡”视图 (FlashcardsView.tsx)：纯 Tailwind CSS 任意值语法实现 3D 翻转（`[perspective:1000px]`、`[transform-style:preserve-3d]`、`[backface-visibility:hidden]`、`rotateY(180deg)`），正面单词音标/背面释义语境 <!-- id: 52 -->
-- [x] 同步构建“📓 我的生词本”视图 (VocabularyView.tsx)：支持生词检索、词根徽章查看、一键音频朗读与生词本 Markdown 导出 <!-- id: 53 -->
-- [x] 视图组装与链路贯通：在 `app/page.tsx` 完整挂载四大核心视图，InteractiveWord 收藏按钮直通 Zustand，全量构建静态验证通过 <!-- id: 54 -->
+- [x] 扩展全局状态 (`src/store/useReaderStore.ts`)：新增 `ttsSpeed`、`setTtsSpeed`、`sentenceTranslations`、`saveSentenceTranslation` 并纳入 IndexedDB 持久化 <!-- id: 40 -->
+- [x] 升级 Edge TTS 与离线语音变速支持 (`src/utils/edgeTTS.ts` & `src/lib/audioPlayer.ts`)：支持 `audio.playbackRate`、`utterance.rate` 及朗读途中实时变速，实现缩写安全的智能分句 `splitParagraphIntoSentences` <!-- id: 41 -->
+- [x] 段落悬浮工具栏新增“🔍 句读”按钮 (`src/components/VirtualPager.tsx`)：遵循移动端 `min-w-[36px] min-h-[36px]` 热区规范与 `e.stopPropagation()` 防冒泡 <!-- id: 42 -->
+- [x] 构建内联句读精读台面板 (`src/components/VirtualPager.tsx`)：支持逐句导航、`<InteractiveWord>` 查词词源、单句/连续跟读、多档变速切换及防剧透单句中文参考缓存 <!-- id: 43 -->
+- [x] 运行 `npm run pages:build` 验证 TypeScript 类型检查与 Cloudflare Pages 边缘静态打包 0 报错 <!-- id: 44 -->

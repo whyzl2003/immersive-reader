@@ -14,7 +14,12 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { TOC_DATA, TocItem } from "@/src/data/bookData";
-import { useReaderStore, getBookIdentifier, BookmarkItem } from "@/src/store/useReaderStore";
+import {
+  useReaderStore,
+  DEFAULT_BOOK_ID,
+  INITIAL_BOOKSHELF,
+  BookmarkItem,
+} from "@/src/store/useReaderStore";
 import { toast } from "sonner";
 import {
   BookOpen,
@@ -36,17 +41,19 @@ export function TocNavigation() {
     goToChapter,
     goToParagraphIndex,
     currentChapterTitle,
-    customBook,
-    customBookTitle,
+    bookshelf,
+    currentBookId,
     bookmarks,
     removeBookmark,
     updateBookmarkTitle,
   } = useReaderStore();
 
-  // 当前书籍标识符
-  const currentBookId = React.useMemo(() => {
-    return getBookIdentifier(customBook, customBookTitle);
-  }, [customBook, customBookTitle]);
+  // 当前书籍实体
+  const currentBook =
+    bookshelf[currentBookId] ||
+    bookshelf[DEFAULT_BOOK_ID] ||
+    INITIAL_BOOKSHELF[DEFAULT_BOOK_ID];
+  const isDefaultBook = currentBookId === DEFAULT_BOOK_ID;
 
   // 过滤属于当前书籍的所有自定义书签，并按段落索引升序排列
   const currentBookBookmarks = React.useMemo(() => {
@@ -55,16 +62,24 @@ export function TocNavigation() {
       .sort((a, b) => a.paragraphIndex - b.paragraphIndex);
   }, [bookmarks, currentBookId]);
 
+  // 当前书籍的结构化章节目录（默认典藏书籍使用 TOC_DATA，导入书籍使用其解析生成的 toc）
+  const currentBookToc: TocItem[] = React.useMemo(() => {
+    if (isDefaultBook) return TOC_DATA;
+    return currentBook.toc && currentBook.toc.length > 0 ? currentBook.toc : [];
+  }, [isDefaultBook, currentBook.toc]);
+
+  const hasChapters = currentBookToc.length > 0;
+
   // 正在编辑名称的书签 ID 和临时输入内容
   const [editingId, setEditingId] = React.useState<string | null>(null);
   const [editingTitle, setEditingTitle] = React.useState("");
 
-  // 如果是自定义 TXT，默认打开书签面板；如果是预设书籍，默认打开章节面板
-  const defaultTab = customBook ? "bookmarks" : "chapters";
+  // 如果有结构化章节目录，默认打开章节面板；如果是纯 TXT 等无目录格式，默认打开书签面板
+  const defaultTab = hasChapters ? "chapters" : "bookmarks";
 
   // 点击章节预设目录跳转
   const handleSelectChapter = (item: TocItem) => {
-    goToChapter(item.startIndex);
+    goToChapter(item.startIndex, item.title);
     setOpen(false);
     toast.info(`已跳转至目录：${item.title}`, {
       description: `起始段落：第 ${item.startIndex + 1} 段（第 ${Math.floor(item.startIndex / pageSize) + 1} 页）`,
@@ -139,11 +154,11 @@ export function TocNavigation() {
           <div className="flex items-center gap-2">
             <BookOpen className="w-5 h-5 text-primary" />
             <SheetTitle className="font-serif text-lg tracking-wide truncate">
-              {customBook ? `《${customBookTitle || "本地文本"}》` : "书籍目录导航"}
+              《{currentBook.title}》
             </SheetTitle>
           </div>
           <SheetDescription className="text-xs text-muted-foreground font-serif">
-            支持切换预设章节与您标记的自定义书签目录，点击即可快速精准定位
+            支持切换结构化章节目录与您标记的自定义书签目录，点击即可快速精准定位
           </SheetDescription>
         </SheetHeader>
 
@@ -153,7 +168,7 @@ export function TocNavigation() {
             <TabsList className="grid w-full grid-cols-2 bg-muted/50 p-1 rounded-lg">
               <TabsTrigger value="chapters" className="text-xs font-serif gap-1.5">
                 <ListTree className="w-3.5 h-3.5" />
-                <span>预置章节 ({customBook ? 0 : TOC_DATA.length})</span>
+                <span>章节目录 ({currentBookToc.length})</span>
               </TabsTrigger>
               <TabsTrigger value="bookmarks" className="text-xs font-serif gap-1.5">
                 <Bookmark className="w-3.5 h-3.5 text-amber-500 fill-current" />
@@ -165,23 +180,23 @@ export function TocNavigation() {
           {/* 面板 1：预设章节列表 */}
           <TabsContent value="chapters" className="flex-1 m-0 focus-visible:outline-none overflow-hidden">
             <ScrollArea className="h-[calc(100vh-175px)] p-3">
-              {customBook ? (
+              {!hasChapters ? (
                 <div className="p-8 text-center text-xs text-muted-foreground font-serif space-y-3">
                   <FileText className="w-8 h-8 text-muted-foreground/40 mx-auto" />
-                  <p className="font-medium text-foreground">本地导入纯文本文档未包含结构化预设章节</p>
+                  <p className="font-medium text-foreground">当前书籍未包含结构化预设章节</p>
                   <p className="text-[11px] leading-relaxed">
                     您可以在正文中鼠标悬停任意段落，点击 🔖 图标为关键节点创建<strong>自定义书签</strong>，并在右侧选项卡中构建专属动态目录！
                   </p>
                 </div>
               ) : (
                 <div className="space-y-1 pr-2">
-                  {TOC_DATA.map((item, index) => {
+                  {currentBookToc.map((item, index) => {
                     const targetPage = Math.floor(item.startIndex / pageSize);
                     const isCurrentChapter = currentChapterTitle === item.title;
 
                     return (
                       <button
-                        key={item.id}
+                        key={item.id || `toc_${index}`}
                         onClick={() => handleSelectChapter(item)}
                         className={`w-full text-left px-3 py-2.5 rounded-lg text-sm transition-all flex items-center justify-between group ${
                           isCurrentChapter

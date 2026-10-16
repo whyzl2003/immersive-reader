@@ -18,7 +18,7 @@ export const TOC_DATA: TocItem[] = [
     "id": "body001",
     "title": "Cover",
     "startIndex": 0,
-    "paragraphsCount": 0
+    "paragraphsCount": 30
   },
   {
     "id": "body003",
@@ -30,19 +30,19 @@ export const TOC_DATA: TocItem[] = [
     "id": "body004",
     "title": "Copyright",
     "startIndex": 34,
-    "paragraphsCount": 27
+    "paragraphsCount": 30
   },
   {
     "id": "body006",
     "title": "Contents",
     "startIndex": 64,
-    "paragraphsCount": 83
+    "paragraphsCount": 85
   },
   {
     "id": "5",
     "title": "Preface",
-    "startIndex": 147,
-    "paragraphsCount": 21
+    "startIndex": 149,
+    "paragraphsCount": 19
   },
   {
     "id": "6",

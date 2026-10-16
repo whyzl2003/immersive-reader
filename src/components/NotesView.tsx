@@ -16,16 +16,63 @@ import {
   DialogFooter,
   DialogTrigger,
 } from "@/components/ui/dialog";
-import { Download, Trash2, Plus, FileText, Calendar, BookOpen, Clock } from "lucide-react";
+import { Download, Trash2, Plus, FileText, Calendar, BookOpen, Clock, ExternalLink } from "lucide-react";
 import { toast } from "sonner";
 
 export function NotesView() {
-  const { notesList, removeNote, addNote, clearAllNotes, currentPage, pageSize } = useReaderStore();
+  const {
+    notesList,
+    removeNote,
+    addNote,
+    clearAllNotes,
+    currentPage,
+    pageSize,
+    currentBookId,
+    getCurrentBook,
+    switchBook,
+    setActiveTab,
+    goToParagraphIndex,
+    setActivePlayingIndex,
+  } = useReaderStore();
+  const currentBook = getCurrentBook();
   const [isAddOpen, setIsAddOpen] = React.useState(false);
   const [newContext, setNewContext] = React.useState("");
   const [newNoteText, setNewNoteText] = React.useState("");
 
-  // 完美复刻 Markdown 导出逻辑（修复丢失字母的 bug，采用纯净 Blob 下载）
+  // 跨书精准穿梭回原文
+  const handleJumpToSource = (note: NoteItem) => {
+    const targetBookId = note.bookId;
+    const targetTitle = note.bookTitle || "原著书籍";
+
+    // 1. 若当前阅读的书籍与笔记所属书籍不一致，自动切换至目标书籍
+    if (targetBookId && currentBookId !== targetBookId) {
+      switchBook(targetBookId);
+      toast.info(`📖 已为您自动切换至《${targetTitle}》`);
+    }
+
+    // 2. 切换主视图为阅读模式
+    setActiveTab("reader");
+
+    // 3. 自动翻到对应页码
+    goToParagraphIndex(note.paragraphIndex);
+    toast.info(`📍 正在穿梭至段落 #${note.paragraphIndex + 1}...`);
+
+    // 4. 平滑滚动定位并赋予短暂呼吸高亮引导视线
+    setTimeout(() => {
+      const element = document.getElementById(`paragraph-${note.paragraphIndex}`);
+      if (element) {
+        element.scrollIntoView({ behavior: "smooth", block: "center" });
+      }
+      setActivePlayingIndex(note.paragraphIndex);
+      setTimeout(() => {
+        if (useReaderStore.getState().activePlayingIndex === note.paragraphIndex) {
+          setActivePlayingIndex(null);
+        }
+      }, 3500);
+    }, 150);
+  };
+
+  // 完美复刻 Markdown 导出逻辑（标注所属书名，采用纯净 Blob 下载）
   const handleExportMarkdown = () => {
     if (notesList.length === 0) {
       toast.info("暂无读书随笔笔记可导出");
@@ -36,7 +83,7 @@ export function NotesView() {
     const LF = "\n";
     const lines: string[] = [];
 
-    lines.push(`# 《${BOOK_TITLE}》读书随笔笔记`);
+    lines.push(`# 📚 读书随笔笔记导出`);
     lines.push("");
     lines.push(`> 📅 导出时间：${exportTime}`);
     lines.push(`> 📊 笔记总计：${notesList.length} 条`);
@@ -45,11 +92,12 @@ export function NotesView() {
     lines.push("");
 
     notesList.forEach((item, idx) => {
+      const bookTitle = item.bookTitle || currentBook.title || "典藏书目";
       const pageNum = item.page || 1;
       const paraNum = (item.paragraphIndex ?? 0) + 1;
       const time = item.updatedAt || item.createdAt || "";
 
-      lines.push(`### ${idx + 1}. 第 ${pageNum} 页 · 段落 #${paraNum}`);
+      lines.push(`### 来自《${bookTitle}》· 第 ${pageNum} 页 · 段落 #${paraNum} (#${idx + 1})`);
       lines.push("");
       lines.push(`*记录时间：${time}*`);
       lines.push("");
@@ -72,7 +120,7 @@ export function NotesView() {
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    const filename = `${BOOK_ID}_Notes_${Date.now()}.md`;
+    const filename = `Reading_Notes_${Date.now()}.md`;
     a.download = filename;
     document.body.appendChild(a);
     a.click();
@@ -90,6 +138,8 @@ export function NotesView() {
     }
 
     addNote({
+      bookId: currentBook.id,
+      bookTitle: currentBook.title,
       paragraphIndex: currentPage * pageSize,
       page: currentPage + 1,
       context: newContext.trim() || `第 ${currentPage + 1} 页所选段落`,
@@ -212,20 +262,35 @@ export function NotesView() {
               key={item.id}
               className="border-border bg-card shadow-xs transition-all hover:border-primary/40 hover:shadow-sm"
             >
-              <CardHeader className="py-3 px-5 border-b border-border/40 flex flex-row items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <span className="font-mono text-xs font-semibold text-primary">
+              <CardHeader className="py-3 px-5 border-b border-border/40 flex flex-row items-center justify-between gap-3">
+                <div className="flex items-center gap-2 flex-wrap min-w-0">
+                  {/* 精美羊皮纸书名 Badge */}
+                  <span className="text-xs text-amber-800/80 dark:text-amber-300/80 bg-amber-100/70 dark:bg-amber-950/40 border border-amber-200/60 dark:border-amber-800/50 px-2 py-0.5 rounded-full mr-1 shrink-0 font-serif">
+                    📖 {item.bookTitle || currentBook.title || "典藏书目"}
+                  </span>
+                  <span className="font-mono text-xs font-semibold text-primary shrink-0">
                     #{idx + 1}
                   </span>
-                  <span className="text-xs font-mono px-2 py-0.5 rounded bg-muted text-muted-foreground">
+                  <span className="text-xs font-mono px-2 py-0.5 rounded bg-muted text-muted-foreground shrink-0">
                     第 {item.page} 页 · 段落 #{(item.paragraphIndex ?? 0) + 1}
                   </span>
                 </div>
-                <div className="flex items-center gap-3">
-                  <div className="flex items-center gap-1 text-[11px] text-muted-foreground font-mono">
+                <div className="flex items-center gap-2 shrink-0">
+                  <div className="flex items-center gap-1 text-[11px] text-muted-foreground font-mono hidden sm:flex">
                     <Clock className="w-3 h-3" />
                     <span>{item.updatedAt || item.createdAt}</span>
                   </div>
+                  {/* 跨书穿梭定位至原文段落 */}
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => handleJumpToSource(item)}
+                    className="h-7 px-2 text-xs font-serif text-amber-700 hover:text-amber-800 hover:bg-amber-100/60 dark:text-amber-400 dark:hover:bg-amber-950/40 gap-1 transition-colors"
+                    title="跨书精准穿梭定位至原文段落"
+                  >
+                    <ExternalLink className="w-3.5 h-3.5" />
+                    <span>🔗 回到原文</span>
+                  </Button>
                   <Button
                     variant="ghost"
                     size="icon"

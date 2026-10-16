@@ -10,6 +10,8 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { playTTS } from "@/src/lib/audioPlayer";
 import { useReaderStore } from "@/src/store/useReaderStore";
+import { ROOTS_DICTIONARY } from "@/src/data/rootsDictionary";
+import { lookupOfflineWord } from "@/src/data/offlineDict";
 import type { WordAnalysis } from "@/src/app/api/analyze-word/route";
 import { Volume2, Loader2, BookmarkPlus, BookmarkCheck } from "lucide-react";
 import { toast } from "sonner";
@@ -43,7 +45,7 @@ export function InteractiveWord({
   const [isFetchingRoots, setIsFetchingRoots] = React.useState<boolean>(false);
   const [rootsError, setRootsError] = React.useState<string | null>(null);
 
-  const { addVocab, vocabularyList } = useReaderStore();
+  const { addVocab, vocabularyList, offlineWordCache, saveOfflineWord } = useReaderStore();
 
   const cleanWord = word.trim().replace(/^['"“‘—\-]+|['"”’—\-]+$/g, "");
   const lowerWord = cleanWord.toLowerCase();
@@ -54,43 +56,127 @@ export function InteractiveWord({
     return vocabularyList.some((v) => v.word.toLowerCase() === lowerWord);
   }, [vocabularyList, lowerWord]);
 
-  // 点击单词触发点读：即刻发音 + 弹出气泡获取释义 + 显式拉取词源
-  const handleClick = async () => {
-    // 1. 立即触发原生/有道智能发音
+  // 点击单词触发点读：即刻发音 + 弹出气泡获取释义 + 词源展示（离线零网络直接秒出，不转圈）
+  const handleClick = async (e: React.MouseEvent) => {
+    // 阻止事件冒泡，避免触发段落容器的选中折叠
+    e.stopPropagation();
+
+    // 1. 立即触发原生/有道智能发音（离线时自动走系统 window.speechSynthesis）
     playTTS(cleanWord);
 
-    // 2. 词源拉取逻辑：显式重置并进入 loading 状态
-    setIsFetchingRoots(true);
+    const isOffline = typeof navigator !== "undefined" && !navigator.onLine;
+
+    // 2. 词源拉取逻辑：离线短路拦截，严禁发起网络请求，彻底消除无限转圈死锁
     setRootsError(null);
-
-    // 异步拉取词源并输出高强度控制台日志
-    (async () => {
-      try {
-        console.log("[Roots] 准备查询:", cleanWord);
-        const res = await fetch("/api/analyze-word?word=" + encodeURIComponent(cleanWord));
-        if (!res.ok) {
-          throw new Error(`HTTP 异常状态码: ${res.status}`);
+    if (isOffline) {
+      // 离线状态：直接在本地词典/词根表中同步查找，立即结束加载状态
+      setIsFetchingRoots(false);
+      const directRoot = ROOTS_DICTIONARY[lowerWord];
+      if (directRoot) {
+        setRootInfo({
+          root: directRoot.root,
+          affixes: directRoot.affixes,
+          note: directRoot.note,
+        });
+      } else {
+        // 尝试通过词形还原查找对应原词的词根
+        const offlineMatch = lookupOfflineWord(cleanWord);
+        const originalWord = offlineMatch?.originalWord?.toLowerCase();
+        const fallbackRoot = originalWord ? ROOTS_DICTIONARY[originalWord] : null;
+        if (fallbackRoot) {
+          setRootInfo({
+            root: fallbackRoot.root,
+            affixes: fallbackRoot.affixes,
+            note: fallbackRoot.note,
+          });
+        } else {
+          setRootInfo(null);
         }
-        const data = await res.json();
-        console.log("[Roots] API 返回结果:", data);
-        setRootInfo(data);
-      } catch (error) {
-        console.error("[Roots] 查询词源失败:", error);
-        setRootsError("词源查询失败");
-        setRootInfo(null);
-      } finally {
-        setIsFetchingRoots(false);
       }
-    })();
+    } else {
+      // 在线状态：正常异步拉取词源分析
+      setIsFetchingRoots(true);
+      (async () => {
+        try {
+          console.log("[Roots] 准备查询:", cleanWord);
+          const res = await fetch("/api/analyze-word?word=" + encodeURIComponent(cleanWord));
+          if (!res.ok) {
+            throw new Error(`HTTP 异常状态码: ${res.status}`);
+          }
+          const data = await res.json();
+          console.log("[Roots] API 返回结果:", data);
+          setRootInfo(data);
+        } catch (error) {
+          console.error("[Roots] 查询词源失败:", error);
+          // 在线请求失败时，兜底查找本地离线词根
+          const localRoot = ROOTS_DICTIONARY[lowerWord];
+          if (localRoot) {
+            setRootInfo({
+              root: localRoot.root,
+              affixes: localRoot.affixes,
+              note: localRoot.note,
+            });
+          } else {
+            setRootsError("词源查询失败");
+            setRootInfo(null);
+          }
+        } finally {
+          setIsFetchingRoots(false);
+        }
+      })();
+    }
 
-    // 3. 基础释义拉取逻辑
+    // 3. 基础释义拉取逻辑（离线查词优先级：内存缓存 -> 生词本 -> offlineWordCache -> offlineDict 内置核心词典与词形还原 -> 在线网络请求）
+    // 3.1 优先命中内存缓存
     if (localTranslationCache.has(lowerWord)) {
       const cached = localTranslationCache.get(lowerWord)!;
       setTranslation(cached);
-      console.log("[单词, 释义, 语境]:", [cleanWord, cached, context]);
       return;
     }
 
+    // 3.2 离线优先：命中本地生词本已存释义
+    const vocabItem = vocabularyList.find((v) => v.word.toLowerCase() === lowerWord);
+    if (vocabItem && vocabItem.translation) {
+      setTranslation(vocabItem.translation);
+      localTranslationCache.set(lowerWord, vocabItem.translation);
+      return;
+    }
+
+    // 3.3 离线优先：命中 IndexedDB 持久化的离线预载缓存表 (offlineWordCache)
+    if (offlineWordCache && offlineWordCache[lowerWord]) {
+      const cachedMeaning = offlineWordCache[lowerWord];
+      setTranslation(cachedMeaning);
+      localTranslationCache.set(lowerWord, cachedMeaning);
+      return;
+    }
+
+    // 3.4 离线优先：命中内置离线核心词典与智能词形还原引擎 (offlineDict.ts)
+    const offlineEntry = lookupOfflineWord(cleanWord);
+    if (offlineEntry) {
+      let displayMeaning = offlineEntry.translation;
+      if (offlineEntry.isLemmatized && offlineEntry.originalWord) {
+        displayMeaning = `[原形 ${offlineEntry.originalWord}] ${displayMeaning}`;
+      }
+      setTranslation(displayMeaning);
+      localTranslationCache.set(lowerWord, displayMeaning);
+      return;
+    }
+
+    // 3.5 备用离线：命中本地词根词典 ROOTS_DICTIONARY 中的说明
+    if (ROOTS_DICTIONARY[lowerWord]?.note) {
+      const rootMeaning = `【词源释义】${ROOTS_DICTIONARY[lowerWord].note}`;
+      setTranslation(rootMeaning);
+      localTranslationCache.set(lowerWord, rootMeaning);
+      return;
+    }
+
+    // 3.6 检查当前是否处于离线飞行模式
+    if (isOffline) {
+      setTranslation("✈️ 当前处于离线模式，该词暂无本地释义（可在联网时使用顶部“✈️预载译文”一键缓存，或联网后点击获取完整释义）");
+      return;
+    }
+
+    // 3.7 在线网络请求查词，并自动将结果存入 offlineWordCache
     setLoading(true);
     try {
       const res = await fetch(`/api/translate?word=${encodeURIComponent(cleanWord)}`);
@@ -98,6 +184,8 @@ export function InteractiveWord({
       if (data && data.success && data.translation) {
         setTranslation(data.translation);
         localTranslationCache.set(lowerWord, data.translation);
+        // 持久化到本地 IndexedDB 离线词汇缓存中，供后续离线阅读使用
+        saveOfflineWord(cleanWord, data.translation);
         console.log("[单词, 释义, 语境]:", [cleanWord, data.translation, context]);
       } else {
         setTranslation("暂无中文释义");

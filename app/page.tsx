@@ -8,15 +8,31 @@ import { FlashcardsView } from "@/src/components/FlashcardsView";
 import { VocabularyView } from "@/src/components/VocabularyView";
 import { NotesView } from "@/src/components/NotesView";
 import { BookImporter } from "@/src/components/BookImporter";
-import { useReaderStore } from "@/src/store/useReaderStore";
-import { BOOK_TITLE, ALL_PARAGRAPHS, TOC_DATA } from "@/src/data/bookData";
-import { Sun, Moon, Bell } from "lucide-react";
+import { BookshelfPanel } from "@/src/components/BookshelfPanel";
+import { SyncEmailModal } from "@/src/components/SyncEmailModal";
+import { OfflinePreloadButton } from "@/src/components/OfflinePreloadButton";
+import { Badge } from "@/components/ui/badge";
+import {
+  useReaderStore,
+  DEFAULT_BOOK_ID,
+  INITIAL_BOOKSHELF,
+} from "@/src/store/useReaderStore";
+import { ALL_PARAGRAPHS, TOC_DATA } from "@/src/data/bookData";
+import { supabase } from "@/src/lib/supabaseClient";
+import { Sun, Moon } from "lucide-react";
 import { toast } from "sonner";
 
 export default function Home() {
   // 暗黑/羊皮纸浅色模式切换状态
   const [isDark, setIsDark] = React.useState(false);
-  const { customBook, customBookTitle, activeTab, setActiveTab } = useReaderStore();
+  const { bookshelf, currentBookId, activeTab, setActiveTab } = useReaderStore();
+
+  // 当前激活的书籍实体
+  const currentBook =
+    bookshelf[currentBookId] ||
+    bookshelf[DEFAULT_BOOK_ID] ||
+    INITIAL_BOOKSHELF[DEFAULT_BOOK_ID];
+  const isDefaultBook = currentBookId === DEFAULT_BOOK_ID;
 
   // 切换主题模式
   const toggleTheme = () => {
@@ -31,6 +47,58 @@ export default function Home() {
     });
   };
 
+  // Supabase 保活心跳与启动时静默同步机制
+  React.useEffect(() => {
+    // 1. 保活心跳机制：向 reading_progress 发起一次极轻量读取，激活免费项目防止7天休眠
+    (async () => {
+      try {
+        const { error } = await supabase.from("reading_progress").select("id").limit(1);
+        if (!error) {
+          console.log("[Supabase Keep-Alive] 心跳唤醒成功，服务活跃中");
+        }
+      } catch (err) {
+        console.warn("[Supabase Keep-Alive] 心跳检测网络波动:", err);
+      }
+    })();
+
+    // 2. 若用户已绑定邮箱，启动时静默同步云端书架、全量补推存量书籍、同步读书笔记、生词本并按时间戳仲裁阅读进度
+    const state = useReaderStore.getState();
+    if (state.userEmail && state.userEmail.trim()) {
+      Promise.allSettled([
+        state.syncBooksWithCloud(),
+        state.syncNotesWithCloud(),
+        state.syncVocabularyWithCloud(),
+        state.pullReadingProgressFromCloud(state.currentBookId, true),
+      ]).then((results) => {
+        results.forEach((r, idx) => {
+          if (r.status === "rejected") {
+            console.warn(`[Supabase] 启动静默同步项 [${idx}] 异常:`, r.reason);
+          }
+        });
+      });
+    }
+  }, []);
+
+  // 离线状态感知监听
+  const [isOffline, setIsOffline] = React.useState(false);
+  React.useEffect(() => {
+    setIsOffline(typeof navigator !== "undefined" && !navigator.onLine);
+    const handleOnline = () => {
+      setIsOffline(false);
+      toast.success("🌐 网络已重新连接，在线云服务已恢复");
+    };
+    const handleOffline = () => {
+      setIsOffline(true);
+      toast.info("✈️ 已进入飞行离线模式，已为您激活离线兜底引擎");
+    };
+    window.addEventListener("online", handleOnline);
+    window.addEventListener("offline", handleOffline);
+    return () => {
+      window.removeEventListener("online", handleOnline);
+      window.removeEventListener("offline", handleOffline);
+    };
+  }, []);
+
   return (
     <div className="min-h-screen bg-background text-foreground flex flex-col transition-colors duration-300">
       {/* 顶部极简书卷头部 */}
@@ -39,19 +107,38 @@ export default function Home() {
           <div className="flex items-center gap-3 min-w-0">
             <span className="text-2xl select-none shrink-0">📖</span>
             <div className="min-w-0">
-              <h1 className="font-serif font-bold text-base sm:text-lg leading-tight tracking-wide text-foreground truncate">
-                {customBook ? (customBookTitle || "本地导入文本") : BOOK_TITLE}
-              </h1>
+              <div className="flex items-center gap-2">
+                <h1 className="font-serif font-bold text-base sm:text-lg leading-tight tracking-wide text-foreground truncate">
+                  {currentBook.title}
+                </h1>
+                {isOffline && (
+                  <Badge
+                    variant="outline"
+                    className="border-amber-500/60 bg-amber-500/10 text-amber-700 dark:text-amber-300 gap-1 text-[11px] font-sans px-2 py-0.5 shrink-0 animate-pulse"
+                  >
+                    ✈️ 离线模式
+                  </Badge>
+                )}
+              </div>
               <p className="text-xs text-muted-foreground font-serif italic truncate">
-                {customBook
-                  ? `本地 TXT 导入 · 共 ${customBook.length} 段落`
-                  : "E. H. Gombrich · 极简羊皮纸沉浸阅读器"}
+                {isDefaultBook
+                  ? "E. H. Gombrich · 极简羊皮纸沉浸阅读器"
+                  : `私人书架平行藏书 · 共 ${currentBook.paragraphs.length} 个段落`}
               </p>
             </div>
           </div>
 
           <div className="flex items-center gap-2 shrink-0">
-            {/* 📁 本地 TXT 导入与恢复默认书籍组件 */}
+            {/* ✈️ 候机室神器：离线预载译文 */}
+            <OfflinePreloadButton variant="outline" size="sm" className="hidden sm:inline-flex" />
+
+            {/* ☁️ Supabase 跨端同步 */}
+            <SyncEmailModal />
+
+            {/* 📚 私人书架抽屉入口 */}
+            <BookshelfPanel />
+
+            {/* 📁 本地 TXT 快速导入 */}
             <BookImporter />
 
             {/* 切换羊皮纸浅色/深色阅读模式 */}
@@ -123,9 +210,9 @@ export default function Home() {
 
       {/* 底部版权与状态栏 */}
       <footer className="border-t border-border py-4 text-center text-xs text-muted-foreground font-serif">
-        {customBook
-          ? `《${customBookTitle || "本地导入文本"}》· 共 ${customBook.length} 段落 · 通用阅读模式`
-          : `A Little History of the World · 共 ${ALL_PARAGRAPHS.length} 段落 · ${TOC_DATA.length} 章节`}
+        {isDefaultBook
+          ? `A Little History of the World · 共 ${ALL_PARAGRAPHS.length} 段落 · ${TOC_DATA.length} 章节`
+          : `《${currentBook.title}》· 共 ${currentBook.paragraphs.length} 段落 · 私人书架平行阅读模式`}
       </footer>
     </div>
   );

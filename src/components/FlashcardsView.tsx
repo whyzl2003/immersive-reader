@@ -34,24 +34,32 @@ function FlashcardItem({ item }: { item: VocabularyItem }) {
     toast.success(`已从生词本中移除：${item.word}`);
   };
 
-  // 溯源回原文穿梭交互逻辑
-  const handleJumpToSource = (paragraphIndex: number) => {
-    // 1. 全局状态中视图切换回“沉浸阅读”主界面
+  // 溯源回原文穿梭交互逻辑（支持跨书平行穿梭）
+  const handleJumpToSource = (paragraphIndex: number, targetBookId?: string, targetBookTitle?: string) => {
+    const { currentBookId, switchBook } = useReaderStore.getState();
+
+    // 1. 若当前阅读书籍与生词所属书籍不一致，先无缝切换书籍
+    if (targetBookId && currentBookId !== targetBookId) {
+      switchBook(targetBookId);
+      toast.info(`📖 已为您自动切换至《${targetBookTitle || "原著书籍"}》`);
+    }
+
+    // 2. 全局状态中视图切换回“沉浸阅读”主界面
     setActiveTab("reader");
 
-    // 2. 翻页到目标段落所在的分页
+    // 3. 翻页到目标段落所在的分页
     goToParagraphIndex(paragraphIndex);
 
     toast.info(`📍 正在溯源至段落 #${paragraphIndex + 1}...`);
 
-    // 3. 延迟 80ms 确保 DOM 渲染完成，平滑滚动至舒适阅读区偏中上位置
+    // 4. 延迟 120ms 确保书籍切换与 DOM 渲染完成，平滑滚动至舒适阅读区偏中上位置
     setTimeout(() => {
       const element = document.getElementById(`paragraph-${paragraphIndex}`);
       if (element) {
         element.scrollIntoView({ behavior: "smooth", block: "center" });
       }
 
-      // 4. （视觉增强）联动高亮逻辑，将目标段落短暂设为 activePlayingIndex 的高亮状态
+      // 5. （视觉增强）联动高亮逻辑，将目标段落短暂设为 activePlayingIndex 的高亮状态
       setActivePlayingIndex(paragraphIndex);
 
       // 3.5秒后自动淡出高亮
@@ -60,7 +68,7 @@ function FlashcardItem({ item }: { item: VocabularyItem }) {
           setActivePlayingIndex(null);
         }
       }, 3500);
-    }, 80);
+    }, 120);
   };
 
   // 点击“忘记了”：重置复习阶段至 0，今天继续复习
@@ -98,13 +106,16 @@ function FlashcardItem({ item }: { item: VocabularyItem }) {
         <div className="absolute inset-0 w-full h-full [backface-visibility:hidden] rounded-xl border border-border bg-card p-5 flex flex-col justify-between shadow-xs transition-shadow hover:shadow-md">
           {/* 正面顶栏 */}
           <div className="flex items-center justify-between">
-            <div className="flex items-center gap-1.5">
-              <span className="text-xs font-mono text-muted-foreground flex items-center gap-1">
-                <Sparkles className="w-3.5 h-3.5 text-primary" />
-                <span>3D 闪卡</span>
+            <div className="flex items-center gap-1.5 min-w-0">
+              {/* 所属书籍来源徽章 */}
+              <span
+                className="text-[11px] text-amber-800/80 dark:text-amber-300/80 bg-amber-100/70 dark:bg-amber-950/50 px-2 py-0.5 rounded-full border border-amber-200/60 dark:border-amber-900/60 truncate max-w-[140px] inline-flex items-center gap-1 font-serif select-none"
+                title={`来源书目：${item.bookTitle || "世界小史"}`}
+              >
+                📖 {item.bookTitle || "世界小史"}
               </span>
               {typeof item.reviewLevel === "number" && item.reviewLevel > 0 && (
-                <Badge variant="outline" className="text-[10px] px-1.5 py-0 font-mono text-primary/80 border-primary/20">
+                <Badge variant="outline" className="text-[10px] px-1.5 py-0 font-mono text-primary/80 border-primary/20 shrink-0">
                   阶段 {item.reviewLevel}
                 </Badge>
               )}
@@ -112,7 +123,7 @@ function FlashcardItem({ item }: { item: VocabularyItem }) {
             <Button
               variant="ghost"
               size="icon"
-              className="h-8 w-8 text-primary hover:bg-primary/10 rounded-full"
+              className="h-8 w-8 text-primary hover:bg-primary/10 rounded-full shrink-0"
               onClick={handleAudio}
               title="播放单词发音"
             >
@@ -192,18 +203,18 @@ function FlashcardItem({ item }: { item: VocabularyItem }) {
               </div>
             )}
 
-            {/* 🔗 回到原文跳转按钮（排版于释义与例句后，第一行严格阻止事件冒泡） */}
+            {/* 🔗 回到原文跳转按钮（排版于释义与例句后，支持跨书穿梭，严格阻止事件冒泡） */}
             {typeof item.paragraphIndex === "number" && (
               <div
                 onClick={(e) => {
                   e.stopPropagation();
-                  handleJumpToSource(item.paragraphIndex!);
+                  handleJumpToSource(item.paragraphIndex!, item.bookId, item.bookTitle);
                 }}
-                className="text-xs text-amber-700/60 hover:text-amber-800 dark:text-amber-400/60 dark:hover:text-amber-300 cursor-pointer transition-colors mt-2 flex justify-end items-center gap-1 select-none"
-                title="定位并跳转回原文段落"
+                className="text-xs text-amber-700/70 hover:text-amber-800 dark:text-amber-400/70 dark:hover:text-amber-300 cursor-pointer transition-colors mt-2 flex justify-end items-center gap-1 select-none font-serif"
+                title={`跨书定位至《${item.bookTitle || "原著"}》第 ${item.paragraphIndex + 1} 段`}
               >
                 <Link2 className="w-3.5 h-3.5" />
-                <span>回到原文</span>
+                <span>回到原文 · {item.bookTitle ? `《${item.bookTitle}》` : "原著"}</span>
               </div>
             )}
 

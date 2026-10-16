@@ -10,7 +10,11 @@ import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { ALL_PARAGRAPHS } from "@/src/data/bookData";
-import { useReaderStore } from "@/src/store/useReaderStore";
+import {
+  useReaderStore,
+  DEFAULT_BOOK_ID,
+  INITIAL_BOOKSHELF,
+} from "@/src/store/useReaderStore";
 import { Search, X, ChevronRight, Hash, BookOpen } from "lucide-react";
 import { toast } from "sonner";
 
@@ -23,9 +27,13 @@ interface SearchResultItem {
 export function GlobalSearch() {
   const [open, setOpen] = React.useState(false);
   const [query, setQuery] = React.useState("");
-  const { pageSize, goToParagraphIndex, customBook } = useReaderStore();
+  const { pageSize, goToParagraphIndex, bookshelf, currentBookId } = useReaderStore();
 
-  const activeParagraphs = customBook || ALL_PARAGRAPHS;
+  const currentBook =
+    bookshelf[currentBookId] ||
+    bookshelf[DEFAULT_BOOK_ID] ||
+    INITIAL_BOOKSHELF[DEFAULT_BOOK_ID];
+  const activeParagraphs = currentBook?.paragraphs || ALL_PARAGRAPHS;
 
   // 实时搜索计算（限制前 60 条匹配，保障 UI 秒级响应）
   const results = React.useMemo(() => {
@@ -35,10 +43,15 @@ export function GlobalSearch() {
     const matched: SearchResultItem[] = [];
     for (let i = 0; i < activeParagraphs.length; i++) {
       const para = activeParagraphs[i];
-      if (para.toLowerCase().includes(q)) {
+      // 忽略纯插图节点
+      if (para.trim().startsWith("<img")) continue;
+
+      // 清洗 HTML 标签，仅对文本内容进行精准匹配
+      const cleanPara = para.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+      if (cleanPara.toLowerCase().includes(q)) {
         matched.push({
           index: i,
-          text: para,
+          text: cleanPara,
           page: Math.floor(i / pageSize) + 1,
         });
         if (matched.length >= 60) break;

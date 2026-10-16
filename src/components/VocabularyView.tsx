@@ -7,11 +7,45 @@ import { playTTS } from "@/src/lib/audioPlayer";
 import { Card, CardHeader, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Volume2, Trash2, Download, Bookmark, Sparkles } from "lucide-react";
+import { Volume2, Trash2, Download, Bookmark, Sparkles, Link2 } from "lucide-react";
 import { toast } from "sonner";
 
 export function VocabularyView() {
-  const { vocabularyList, removeVocab, clearAllVocab } = useReaderStore();
+  const {
+    vocabularyList,
+    removeVocab,
+    clearAllVocab,
+    setActiveTab,
+    goToParagraphIndex,
+    setActivePlayingIndex,
+    switchBook,
+    currentBookId,
+  } = useReaderStore();
+
+  // 溯源回原文（支持跨书平行切换）
+  const handleJumpToSource = (paragraphIndex: number, targetBookId?: string, targetBookTitle?: string) => {
+    if (targetBookId && currentBookId !== targetBookId) {
+      switchBook(targetBookId);
+      toast.info(`📖 已为您自动切换至《${targetBookTitle || "原著书籍"}》`);
+    }
+
+    setActiveTab("reader");
+    goToParagraphIndex(paragraphIndex);
+    toast.info(`📍 正在溯源至段落 #${paragraphIndex + 1}...`);
+
+    setTimeout(() => {
+      const element = document.getElementById(`paragraph-${paragraphIndex}`);
+      if (element) {
+        element.scrollIntoView({ behavior: "smooth", block: "center" });
+      }
+      setActivePlayingIndex(paragraphIndex);
+      setTimeout(() => {
+        if (useReaderStore.getState().activePlayingIndex === paragraphIndex) {
+          setActivePlayingIndex(null);
+        }
+      }, 3500);
+    }, 120);
+  };
 
   // 导出生词本为 Markdown
   const handleExportVocabMarkdown = () => {
@@ -135,6 +169,15 @@ export function VocabularyView() {
                     <span className="font-serif font-bold text-base text-foreground">
                       {item.word}
                     </span>
+
+                    {/* 📖 所属书籍来源徽章 */}
+                    <span
+                      className="text-[11px] text-amber-800/80 dark:text-amber-300/80 bg-amber-100/70 dark:bg-amber-950/50 px-2 py-0.5 rounded-full border border-amber-200/60 dark:border-amber-900/60 font-serif inline-flex items-center gap-1 select-none shrink-0"
+                      title={`收录自原著：《${item.bookTitle || "世界小史"}》`}
+                    >
+                      📖 {item.bookTitle || "世界小史"}
+                    </span>
+
                     {item.root && (
                       <Badge variant="secondary" className="text-[10px] font-mono bg-primary/10 text-primary border-primary/20">
                         {item.root}
@@ -158,7 +201,21 @@ export function VocabularyView() {
                   )}
                 </div>
 
-                <div className="flex items-center gap-1 shrink-0 self-end sm:self-center">
+                <div className="flex items-center gap-1.5 shrink-0 self-end sm:self-center">
+                  {/* 🔗 回到原文跳转按钮（支持跨书平行穿梭） */}
+                  {typeof item.paragraphIndex === "number" && (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-8 gap-1 text-xs text-amber-700/80 hover:text-amber-800 dark:text-amber-400/80 dark:hover:text-amber-300 font-serif"
+                      onClick={() => handleJumpToSource(item.paragraphIndex!, item.bookId, item.bookTitle)}
+                      title={`跳转回《${item.bookTitle || "原著"}》第 ${item.paragraphIndex + 1} 段`}
+                    >
+                      <Link2 className="w-3.5 h-3.5" />
+                      <span className="hidden sm:inline">回到原文</span>
+                    </Button>
+                  )}
+
                   <Button
                     variant="ghost"
                     size="icon"
