@@ -1,9 +1,9 @@
 # 沉浸式多端双语阅读器 (Immersive Reader)
 ## 全景系统架构与开发者指南 (System Architecture & Developer Guide)
 
-> **版本**：v2.3.0 (真·全功能飞行模式与离线词形还原引擎版)  
-> **最后更新时间**：2026-10-14  
-> **核心定位**：基于“离线优先 (Offline-First)”理念打造的跨端双语深度阅读器，集成私人海量书架、四合一云端双向静默漫游、微软 Edge Neural 高保真神经元听书引擎、真·全功能飞行模式与艾宾浩斯智能复习体系。
+> **版本**：v2.4.0 (句读工坊、口语发音评测双擎与渲染性能守恒版)  
+> **最后更新时间**：2026-10-16  
+> **核心定位**：基于“离线优先 (Offline-First)”理念打造的跨端双语深度阅读器，集成私人海量书架、四合一云端双向静默漫游、微软 Edge Neural 高保真神经元听书引擎、句读精读台与口语发音双擎评测、真·全功能飞行模式与艾宾浩斯智能复习体系。
 
 ---
 
@@ -13,7 +13,7 @@
 3. [技术栈选型一览](#3-技术栈选型一览)
 4. [项目目录与模块索引](#4-项目目录与模块索引)
 5. [数据存储模型规范 (IndexedDB vs Supabase)](#5-数据存储模型规范-indexeddb-vs-supabase)
-6. [八大核心工程系统硬核解析](#6-八大核心工程系统硬核解析)
+6. [十大核心工程系统硬核解析](#6-十大核心工程系统硬核解析)
    - [6.1 离线优先与四合一云端漫游引擎](#61-离线优先与四合一云端漫游引擎)
    - [6.2 微软 Edge Neural TTS 高保真语音管道](#62-微软-edge-neural-tts-高保真语音管道)
    - [6.3 纯前端 EPUB / TXT 极速流式解析器](#63-纯前端-epub--txt-极速流式解析器)
@@ -22,6 +22,10 @@
    - [6.6 真·全功能飞行模式与 PWA 离线外壳 (Service Worker)](#66-真全功能飞行模式与-pwa-离线外壳-service-worker)
    - [6.7 内置离线核心词典与英文词形还原（Lemmatization）引擎](#67-内置离线核心词典与英文词形还原lemmatization引擎)
    - [6.8 长段落分片并发翻译与候机室双预载架构](#68-长段落分片并发翻译与候机室双预载架构)
+   - [6.9 句读精读台与意群断句（Chunking）/ 主干语义高亮算法](#69-句读精读台与意群断句chunking--主干语义高亮算法)
+   - [6.10 双引擎口语发音评估架构与 LCS+Levenshtein 诊断模型](#610-双引擎口语发音评估架构与-lcslevenshtein-诊断模型)
+   - [6.11 单句听打训练与三色文本差分（Diff）渲染](#611-单句听打训练与三色文本差分diff渲染)
+   - [6.12 前端性能守恒：React.memo 纯组件化与 Zustand 细粒度选择器](#612-前端性能守恒reactmemo-纯组件化与-zustand-细粒度选择器)
 7. [本地开发、构建与边缘部署手册](#7-本地开发构建与边缘部署手册)
 8. [关键踩坑经验与隐形设计契约 (Gotchas)](#8-关键踩坑经验与隐形设计契约-gotchas)
 9. [未来升级路线图 (Roadmap)](#9-未来升级路线图-roadmap)
@@ -384,6 +388,78 @@ $$\text{Sec-MS-GEC} = \text{SHA256}(\text{Ticks} + \text{TRUSTED\_CLIENT\_TOKEN}
 
 ---
 
+### 6.9 句读精读台与意群断句（Chunking）/ 主干语义高亮算法
+
+针对长难句认知负荷高的问题，精读台 (`src/components/SentenceReaderModal.tsx` & `src/utils/chunking.ts`) 提供了客户端纯前端语义剖析：
+- **正规分句器 (Sentence Splitting)**：
+  - 正则表达式兼顾标点符号与常见英文缩写保护（如 `Mr.`, `Dr.`, `e.g.`, `U.S.` 等），准确将段落文本拆解为自然句数组；
+  - 维护句索引（`sentenceIndex`），支持键盘 Space、R、J、K 无缝流转。
+- **启发式意群划分算法 (Heuristic Chunking)**：
+  - 基于词性模式与介词/连词边界切片：识别介词短语（`in`, `on`, `at`, `with` 等）、从句连接词（`which`, `that`, `because`, `although` 等）、动词不定式（`to do`）及逗号/分号；
+  - 将句子渲染为若干个用轻量斜线隔开的节奏块，降低阅读跨度，辅助建立英文母语节奏。
+- **主干语义提取 (Core Semantic Extraction)**：
+  - 智能探测句子最核心的主语、谓语主干动词及核心受词；
+  - 在意群模式下为核心词汇赋予加粗及琥珀光晕高亮，剥离从句冗余干扰。
+
+---
+
+### 6.10 双引擎口语发音评估架构与 LCS+Levenshtein 诊断模型
+
+口语发音评估 (`src/utils/speechEvaluation.ts`) 摒弃了昂贵外部商业 API，基于现代浏览器原生 Web API 实现高性能本地评测：
+- **双引擎并发采集架构**：
+  ```
+  用户点击录音
+     ├── 引擎 A: Web Speech API (SpeechRecognition)
+     │     └── 开启 en-US 连续识别，maxAlternatives=3，捕获识别文本与置信度
+     └── 引擎 B: Web Audio API (AudioContext)
+           └── AudioWorklet / ScriptProcessor 实时以 20fps 采集音量包络与 RMS 振幅
+  ```
+- **多维综合评分模型**：
+  - **准确率 (Accuracy, 60%)**：
+    - 结合**最长公共子序列 (LCS)** 算法计算目标句与识别句在单词级上的保序匹配度；
+    - 针对未严格命中的单词，应用 **Levenshtein 动态规划距离** 衡量音素形似度（容忍轻微连读与时态变形）；
+  - **流利度 (Fluency, 25%)**：
+    - 基于有效朗读耗时与单词总数计算 WPM（Words Per Minute），结合 AudioContext 测得的有效发声比率与长静音停顿次数进行阶梯惩罚；
+  - **完整度 (Completeness, 15%)**：
+    - 评估发音单词在目标句中的覆盖比例（`matchedWords / totalWords`）。
+- **单词级三色信号灯诊断状态输出**：
+  - 每个单词最终输出 `status: 'excellent' | 'good' | 'needs_work'`：
+    - `excellent`（绿色）：音素完全契合且节奏稳定；
+    - `good`（黄色）：存在轻度发音偏差或轻微停顿；
+    - `needs_work`（红色）：漏读、严重误读或停顿超时；
+  - 结果实时反馈在界面单词上方，支持逐词点击复查。
+
+---
+
+### 6.11 单句听打训练与三色文本差分（Diff）渲染
+
+- **听打模式集成 (`SentenceReaderModal.tsx`)**：
+  - 一键隐去原文正文，提供 Ava 高保真原音循环盲听与输入框交互；
+- **单词级最小编辑距离对齐 (Word-level LCS Diff)**：
+  - 对用户输入文本（`input`）与标准答案（`expected`）进行标准化清洗（去除外围标点、转小写）；
+  - 通过双指针回溯算法生成三类标记差分：
+    - `match`：单词拼写完全正确（绿色徽章）；
+    - `insert`：用户多打的冗余单词（红色删除线）；
+    - `delete`：用户漏打的单词（浅灰下划线提示原词）；
+  - 错词可一键点击直接收录至 `IndexedDB` 生词本中。
+
+---
+
+### 6.12 前端性能守恒：React.memo 纯组件化与 Zustand 细粒度选择器
+
+随着朗读高亮频率提升（每秒多次触发游标更新），若虚拟列表或大段落重新渲染，会导致低配设备输入卡顿与掉帧。
+- **纯组件隔离与 React.memo**：
+  - 将段落行拆分为独立的 `ParagraphRow` / `SentenceRow`，并通过 `React.memo(..., (prev, next) => ...)` 进行 props 浅比较与精准拦截；
+  - 仅当当前段落进入播放激活态（`isActive`）、书签状态改变或笔记更新时才触发微观局部重绘，整页静态段落 0 重绘。
+- **Zustand 细粒度 Selector 规范**：
+  - 严禁在大型组件内无选择器解构全局 Store（如 `const { ... } = useReaderStore()`）；
+  - 必须按需抽取最小状态原子切片：`const activeId = useReaderStore(s => s.activeParagraphId)`，杜绝全局无关状态突变引发雪崩式重渲染。
+- **图标矢量渲染净化规范**：
+  - 按钮图标统一使用 Lucide React 纯 SVG 矢量图标（如 `<Play />`, `<Volume2 />`）；
+  - 严禁在按钮内部同时堆叠 Unicode Emoji（如 `▶`）与 SVG 图标，确保全端跨平台视觉渲染统一、无幽灵重复图标。
+
+---
+
 ## 7. 本地开发、构建与边缘部署手册
 
 ### 7.1 环境准备
@@ -436,6 +512,14 @@ npx wrangler pages deploy .vercel/output/static --project-name="immersive-reader
 6. **多设备大文件手动导入与 Book ID 确定性**：
    - 绝不可使用随机数或时间戳作为书籍 ID，否则多端离线分别手动导入同一本书时将导致进度、生词与笔记分裂；
    - 统一采用小写、剔除所有空白与标点符号的确定性哈希 ID。
+7. **移动端视口高度动态适配 (`100dvh`)**：
+   - 在移动端听写或精读弹窗中，移动端软键盘弹起会动态压缩视口高度。
+   - 若使用传统 `100vh` 会导致底部输入框或按钮被虚拟键盘遮挡。因此全局弹窗外壳必须采用 `h-[100dvh]` 动态视口高度，确保输入框与控制栏始终位于安全可见区域。
+8. **麦克风权限生命周期与静默安全释放**：
+   - 调用 `navigator.mediaDevices.getUserMedia({ audio: true })` 后，必须在录音停止或组件卸载（`useEffect` cleanup）时，显式迭代并关闭所有音轨：`stream.getTracks().forEach(track => track.stop())`；
+   - 否则设备顶部的麦克风黄点会常驻，引发隐私疑虑与电量消耗。
+9. **UI 图标层单一化契约**：
+   - 按钮图标组件内严禁混用 Unicode 字符（如 `▶`, `❚❚`）与 Lucide 矢量图标，所有操作按钮统一基于 Lucide React 矢量图标渲染，彻底杜绝双层图标 Bug。
 
 ---
 
@@ -444,6 +528,8 @@ npx wrangler pages deploy .vercel/output/static --project-name="immersive-reader
 - [ ] **AI 伴读与智能答疑**：选中文中任意长难句，一键唤出 AI 语法结构拆解与文化背景透视；
 - [ ] **多声部与多语种音色切换**：支持用户在设置中自定义 Edge TTS 发音人（如 Andrew 男声、Guy 英音等）；
 - [x] **本地图书目录树 (Table of Contents)**：解析 EPUB 的 `toc.ncx` / `nav.xhtml`，提供侧边抽屉目录无缝跳转、毫秒级精准对齐与呼吸灯提示；
+- [x] **句读精读台与意群高亮 (Sentence Reader & Chunking)**：单句循环复读、语法意群拆解与核心语义骨架高亮；
+- [x] **双引擎发音评估与听打实训 (Pronunciation Assessment & Dictation Diff)**：结合 Web Speech + Web Audio 实现音素级打分与单句听写差分比对；
 - [ ] **EPUB 字体与间距个性化**：支持用户自定义羊皮纸底色、衬线/无衬线字体及行高缩放。
 
 ---
