@@ -29,6 +29,11 @@ import { playTTS, stopTTS, updateTTSPlaybackRate } from "@/src/lib/audioPlayer";
 import { splitParagraphIntoSentences } from "@/src/utils/edgeTTS";
 import { lookupOfflineWord } from "@/src/data/offlineDict";
 import {
+  startSpeechEvalSession,
+  type PronunciationEvaluationResult,
+  type SpeechEvalSession,
+} from "@/src/utils/speechEvaluation";
+import {
   ChevronLeft,
   ChevronRight,
   ChevronsLeft,
@@ -297,9 +302,13 @@ export function VirtualPager() {
   // ✂️ 意群斜杠断句与主干透视开关状态
   const [isChunkingMode, setIsChunkingMode] = React.useState<boolean>(false);
 
-  // 🎙️ 原声跟读对比（Echo Shadowing 录音与连播）状态与引用
+  // 🎙️ 原声跟读对比与 🎯 智能跟读打分状态与引用
   const [recordingParaIndex, setRecordingParaIndex] = React.useState<number | null>(null);
   const [shadowingAudioUrls, setShadowingAudioUrls] = React.useState<Record<number, string>>({});
+  const [shadowingEvalResults, setShadowingEvalResults] = React.useState<
+    Record<number, PronunciationEvaluationResult | null>
+  >({});
+  const [evaluatingParaIndex, setEvaluatingParaIndex] = React.useState<number | null>(null);
   const [playingUserAudioPara, setPlayingUserAudioPara] = React.useState<number | null>(null);
   const [echoComparingPara, setEchoComparingPara] = React.useState<number | null>(null);
   const mediaRecorderRef = React.useRef<MediaRecorder | null>(null);
@@ -307,6 +316,7 @@ export function VirtualPager() {
   const audioChunksRef = React.useRef<BlobPart[]>([]);
   const userAudioPlayerRef = React.useRef<HTMLAudioElement | null>(null);
   const shadowingUrlsRef = React.useRef<Record<number, string>>({});
+  const speechEvalSessionRef = React.useRef<SpeechEvalSession | null>(null);
 
   // ✍️ 句读单句听打（Sentence Dictation）专属状态与输入框引用
   const [sentenceDictationOpen, setSentenceDictationOpen] = React.useState<Record<number, boolean>>({});
@@ -348,8 +358,13 @@ export function VirtualPager() {
     setEchoComparingPara(null);
   }, []);
 
-  // 停止正在进行的麦克风录音并释放硬件流
-  const stopActiveRecording = React.useCallback(() => {
+  // 停止正在进行的麦克风录音并释放硬件流（abortEval 为 true 时放弃语音评测）
+  const stopActiveRecording = React.useCallback((abortEval = false) => {
+    if (abortEval && speechEvalSessionRef.current) {
+      speechEvalSessionRef.current.abort();
+      speechEvalSessionRef.current = null;
+      setEvaluatingParaIndex(null);
+    }
     if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
       try {
         mediaRecorderRef.current.stop();
@@ -364,7 +379,7 @@ export function VirtualPager() {
     setRecordingParaIndex(null);
   }, []);
 
-  // 清理释放指定段落的跟读录音 Blob URL
+  // 清理释放指定段落的跟读录音 Blob URL 与发音评测报告
   const revokeShadowingUrl = React.useCallback((paraIndex: number) => {
     const oldUrl = shadowingUrlsRef.current[paraIndex];
     if (oldUrl) {
@@ -381,9 +396,15 @@ export function VirtualPager() {
       delete next[paraIndex];
       return next;
     });
+    setShadowingEvalResults((prev) => {
+      if (!prev[paraIndex]) return prev;
+      const next = { ...prev };
+      delete next[paraIndex];
+      return next;
+    });
   }, []);
 
-  // 清理释放所有跟读录音 Blob URL
+  // 清理释放所有跟读录音 Blob URL 与发音评测报告
   const revokeAllShadowingUrls = React.useCallback(() => {
     Object.values(shadowingUrlsRef.current).forEach((url) => {
       try {
@@ -394,6 +415,7 @@ export function VirtualPager() {
     });
     shadowingUrlsRef.current = {};
     setShadowingAudioUrls({});
+    setShadowingEvalResults({});
   }, []);
 
   // 停止句读音频流、连续队列与回声对比
@@ -754,19 +776,19 @@ export function VirtualPager() {
     }
   };
 
-  // 🎙️ 句读面板：启动 / 停止原声跟读录音（纯前端 MediaRecorder）
-  const handleToggleShadowingRecord = async (paraIndex: number) => {
+  // 🎙️ 句读面板：启动 / 停止原声跟读录音并同步进行 🎯 智能发音评测
+  const handleToggleShadowingRecord = async (paraIndex: number, targetSentence: string) => {
     setActiveSentenceReaderPara(paraIndex);
 
-    // 若当前段落正在录音，点击则结束录音
+    // 若当前段落正在录音，点击则结束录音并触发自动评分
     if (recordingParaIndex === paraIndex) {
-      stopActiveRecording();
+      stopActiveRecording(false);
       return;
     }
 
     // 录音前先停止正在播放的 TTS 语音、其它录音或回声对比
     stopSentenceReaderAudio();
-    stopActiveRecording();
+    stopActiveRecording(true);
 
     if (
       typeof navigator === "undefined" ||
@@ -782,6 +804,11 @@ export function VirtualPager() {
       mediaStreamRef.current = stream;
       audioChunksRef.current = [];
 
+      // 清理上一次评测结果，启动双引擎并行语音识别与声学包络监测
+      setShadowingEvalResults((prev) => ({ ...prev, [paraIndex]: null }));
+      const evalSession = startSpeechEvalSession(stream);
+      speechEvalSessionRef.current = evalSession;
+
       const recorder = new MediaRecorder(stream);
       mediaRecorderRef.current = recorder;
 
@@ -791,14 +818,20 @@ export function VirtualPager() {
         }
       };
 
-      recorder.onstop = () => {
+      recorder.onstop = async () => {
         if (mediaStreamRef.current) {
           mediaStreamRef.current.getTracks().forEach((track) => track.stop());
           mediaStreamRef.current = null;
         }
         setRecordingParaIndex(null);
 
-        if (audioChunksRef.current.length === 0) return;
+        if (audioChunksRef.current.length === 0) {
+          if (speechEvalSessionRef.current) {
+            speechEvalSessionRef.current.abort();
+            speechEvalSessionRef.current = null;
+          }
+          return;
+        }
 
         const mimeType = recorder.mimeType || "audio/webm";
         const audioBlob = new Blob(audioChunksRef.current, { type: mimeType });
@@ -819,9 +852,32 @@ export function VirtualPager() {
           [paraIndex]: blobUrl,
         }));
 
-        toast.success("🎙️ 跟读录音已完成！", {
-          description: "可点击「▶️ 听我的发音」或「🔄 原音+我的对比」体验回声对比法。",
-        });
+        // 执行智能跟读打分与逐词发音诊断
+        const activeEvalSession = speechEvalSessionRef.current;
+        speechEvalSessionRef.current = null;
+        if (activeEvalSession) {
+          setEvaluatingParaIndex(paraIndex);
+          try {
+            const cleanTarget = stripHtml(targetSentence);
+            const evalResult = await activeEvalSession.stopAndEvaluate(cleanTarget);
+            setShadowingEvalResults((prev) => ({
+              ...prev,
+              [paraIndex]: evalResult,
+            }));
+            const starStr = "⭐".repeat(Math.max(1, evalResult.stars));
+            toast.success(`🎯 跟读评分：${evalResult.overallScore} 分 ${starStr}`, {
+              description: `${evalResult.gradeLabel} · 点击「🔄 原音+我的对比」或下方诊断词可纠音。`,
+            });
+          } catch {
+            toast.success("🎙️ 跟读录音已完成！");
+          } finally {
+            setEvaluatingParaIndex((curr) => (curr === paraIndex ? null : curr));
+          }
+        } else {
+          toast.success("🎙️ 跟读录音已完成！", {
+            description: "可点击「▶️ 听我的发音」或「🔄 原音+我的对比」体验回声对比法。",
+          });
+        }
       };
 
       recorder.start();
@@ -1906,9 +1962,11 @@ export function VirtualPager() {
                     const isSentBlurred =
                       isSentDictating && !isSentPeeked && !sentDictationResult;
 
-                    // 🎙️ 原声跟读录音与回声对比状态
+                    // 🎙️ 原声跟读录音、回声对比与 🎯 智能跟读评测状态
                     const isRecordingThisPara = recordingParaIndex === globalIndex;
+                    const isEvaluatingThisPara = evaluatingParaIndex === globalIndex;
                     const currentShadowingUrl = shadowingAudioUrls[globalIndex];
+                    const currentEvalResult = shadowingEvalResults[globalIndex] || null;
                     const isPlayingUserAudio = playingUserAudioPara === globalIndex;
                     const isEchoComparing = echoComparingPara === globalIndex;
 
@@ -2332,7 +2390,7 @@ export function VirtualPager() {
                                 size="sm"
                                 onClick={(e) => {
                                   e.stopPropagation();
-                                  handleToggleShadowingRecord(globalIndex);
+                                  handleToggleShadowingRecord(globalIndex, currentSentence);
                                 }}
                                 className={`h-8 px-3 text-xs font-serif gap-1.5 cursor-pointer transition-all ${
                                   isRecordingThisPara
@@ -2341,14 +2399,14 @@ export function VirtualPager() {
                                 }`}
                                 title={
                                   isRecordingThisPara
-                                    ? "点击停止跟读录音"
-                                    : "开启麦克风录制本句跟读发音（Echo Shadowing）"
+                                    ? "点击停止跟读录音并生成发音评测报告"
+                                    : "开启麦克风录制本句跟读发音并进行 AI 智能发音评分"
                                 }
                               >
                                 <span>
                                   {isRecordingThisPara
-                                    ? "⏹ 结束录音 (录音中...)"
-                                    : "🎙️ 跟读录音"}
+                                    ? "⏹ 结束录音并打分..."
+                                    : "🎙️ 跟读打分"}
                                 </span>
                               </Button>
 
@@ -2405,6 +2463,130 @@ export function VirtualPager() {
                             </div>
                           </div>
                         </div>
+
+                        {/* 🎯 智能跟读打分与逐词发音诊断面板 */}
+                        {(isEvaluatingThisPara || currentEvalResult) && (
+                          <div className="pt-2.5 border-t border-amber-500/25 animate-in fade-in-50 duration-200">
+                            {isEvaluatingThisPara && !currentEvalResult ? (
+                              <div className="flex items-center gap-2 py-2.5 px-3.5 rounded-lg bg-background/85 border border-amber-500/30 text-xs font-serif text-amber-800 dark:text-amber-200">
+                                <Loader2 className="w-3.5 h-3.5 animate-spin text-amber-600" />
+                                <span>🎯 正在进行声学包络与逐词发音诊断...</span>
+                              </div>
+                            ) : currentEvalResult ? (
+                              <div className="rounded-lg bg-background/90 border border-amber-500/35 p-3.5 space-y-3 shadow-2xs">
+                                {/* 顶部综合得分、星级与三维指标栏 */}
+                                <div className="flex flex-wrap items-center justify-between gap-2 pb-2.5 border-b border-border/50">
+                                  <div className="flex flex-wrap items-center gap-2">
+                                    <span
+                                      className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-serif font-bold border ${
+                                        currentEvalResult.overallScore >= 85
+                                          ? "bg-emerald-500/15 text-emerald-800 dark:text-emerald-200 border-emerald-500/35"
+                                          : currentEvalResult.overallScore >= 68
+                                          ? "bg-amber-500/20 text-amber-900 dark:text-amber-200 border-amber-500/40"
+                                          : "bg-red-500/15 text-red-700 dark:text-red-300 border-red-500/35"
+                                      }`}
+                                    >
+                                      <span>🎯 发音总分：{currentEvalResult.overallScore} 分</span>
+                                      <span className="tracking-tighter">
+                                        {"⭐".repeat(Math.max(1, currentEvalResult.stars))}
+                                      </span>
+                                    </span>
+
+                                    <span className="text-xs font-serif font-semibold text-foreground/90">
+                                      {currentEvalResult.gradeLabel}
+                                    </span>
+
+                                    <span className="text-[11px] font-mono text-muted-foreground bg-muted/50 px-2 py-0.5 rounded border border-border/50">
+                                      语速 {currentEvalResult.wpm} 词/分 · 时长 {currentEvalResult.durationSec}s
+                                    </span>
+                                  </div>
+
+                                  {/* 三维细分指标徽章 */}
+                                  <div className="flex flex-wrap items-center gap-1.5 text-[11px] font-mono">
+                                    <span className="px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-800 dark:text-emerald-200 border border-emerald-500/25">
+                                      准确度 {currentEvalResult.accuracyScore}%
+                                    </span>
+                                    <span className="px-2 py-0.5 rounded bg-sky-500/10 text-sky-800 dark:text-sky-200 border border-sky-500/25">
+                                      流利度 {currentEvalResult.fluencyScore}%
+                                    </span>
+                                    <span className="px-2 py-0.5 rounded bg-amber-500/10 text-amber-900 dark:text-amber-200 border border-amber-500/25">
+                                      完整度 {currentEvalResult.completenessScore}%
+                                    </span>
+                                  </div>
+                                </div>
+
+                                {/* 逐词发音红绿灯诊断区 */}
+                                {currentEvalResult.wordItems.length > 0 && (
+                                  <div className="space-y-2">
+                                    <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-muted-foreground font-serif">
+                                      <span>
+                                        🩺 逐词发音诊断（点击任意词听标准发音；点击黄/红词可同时纠音并一键收入生词本）：
+                                      </span>
+                                      <div className="flex items-center gap-2.5 select-none">
+                                        <span className="inline-flex items-center gap-1">
+                                          <span className="w-2 h-2 rounded-full bg-emerald-500" />
+                                          <span>地道 ({currentEvalResult.wordItems.filter((w) => w.status === "excellent").length})</span>
+                                        </span>
+                                        <span className="inline-flex items-center gap-1">
+                                          <span className="w-2 h-2 rounded-full bg-amber-500" />
+                                          <span>尚可 ({currentEvalResult.wordItems.filter((w) => w.status === "good").length})</span>
+                                        </span>
+                                        <span className="inline-flex items-center gap-1">
+                                          <span className="w-2 h-2 rounded-full bg-red-500" />
+                                          <span>需加强 ({currentEvalResult.wordItems.filter((w) => w.status === "needs_work").length})</span>
+                                        </span>
+                                      </div>
+                                    </div>
+
+                                    <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
+                                      {currentEvalResult.wordItems.map((item, wIdx) => {
+                                        const isExcellent = item.status === "excellent";
+                                        const isGood = item.status === "good";
+                                        return (
+                                          <button
+                                            key={`${item.cleanWord}-${wIdx}`}
+                                            type="button"
+                                            onClick={(e) => {
+                                              e.stopPropagation();
+                                              playTTS(item.cleanWord);
+                                              if (!isExcellent) {
+                                                handleAddDictationVocab(
+                                                  item.cleanWord,
+                                                  currentSentence,
+                                                  globalIndex,
+                                                  `来自句读跟读发音诊断（单句跟读得分 ${item.score} 分）`
+                                                );
+                                              }
+                                            }}
+                                            className={`px-2 py-0.5 rounded-md text-sm font-serif border transition-all cursor-pointer inline-flex items-center gap-1 ${
+                                              isExcellent
+                                                ? "bg-emerald-500/12 text-emerald-900 dark:text-emerald-200 border-emerald-500/30 hover:bg-emerald-500/20"
+                                                : isGood
+                                                ? "bg-amber-500/20 text-amber-950 dark:text-amber-100 border-amber-500/45 hover:bg-amber-500/30 font-medium"
+                                                : "bg-red-500/15 text-red-700 dark:text-red-300 border-red-500/40 hover:bg-red-500/25 font-semibold underline decoration-wavy decoration-red-500/70"
+                                            }`}
+                                            title={
+                                              isExcellent
+                                                ? `发音地道 (${item.score}分) · 点击重听 "${item.word}" 标准读音`
+                                                : item.spokenAs
+                                                ? `发音近似 "${item.spokenAs}" (${item.score}分) · 点击听标准发音并加入生词本`
+                                                : `建议重点练习 (${item.score}分) · 点击听标准发音并加入生词本`
+                                            }
+                                          >
+                                            <span>{item.word}</span>
+                                            <span className="text-[10px] font-mono opacity-75">
+                                              {item.score}
+                                            </span>
+                                          </button>
+                                        );
+                                      })}
+                                    </div>
+                                  </div>
+                                )}
+                              </div>
+                            ) : null}
+                          </div>
+                        )}
 
                         {/* ✍️ 单句听打输入框与三色精密 Diff 比对面板 */}
                         {isSentDictating && (

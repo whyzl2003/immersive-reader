@@ -1,7 +1,15 @@
-# 任务清单：🔍 句读（Sentence Reader 精读台）2.0 终极满配升级
+# 任务清单 (Task List)
 
-- [x] 🎙️ 原声跟读对比 (`src/components/VirtualPager.tsx`)：实现纯前端 `MediaRecorder` 跟读录音、`Blob URL` 自动释放、`[▶️ 听我的发音]` 与 `[🔄 原音+我的对比]` 回声对比法无缝接力连播 <!-- id: 46 -->
-- [x] ✂️ 意群斜杠断句与主干透视 (`src/lib/tokenizer.tsx` & `src/components/VirtualPager.tsx`)：实现 `renderChunkedSentence`，支持古铜金 ` / ` 意群停顿标记、插入语 `opacity-65 italic` 弱化透视，并 100% 保留 `<InteractiveWord>` 查词词源能力 <!-- id: 47 -->
-- [x] ⭐ 金句一键收藏 (`src/components/VirtualPager.tsx`)：右上角新增 `[⭐ 收藏本句]` / `[🌟 已收藏]`，调用 `addNote` 将英文原句、单句中文译文与 `【✨ 句读金句收藏】` 标签绑定 `bookId`/`bookTitle`/`paragraphIndex` 存入“📒 我的笔记” <!-- id: 48 -->
-- [x] ⌨️ 全键盘极客操控心流 (`src/components/VirtualPager.tsx`)：支持 `Space` 重听/停止、`←/→` 切换上下句、`D` 开启聚焦听打本句、`C` 切换意群断句，并添加底部快捷键提示 <!-- id: 49 -->
-- [x] 运行 `npm run pages:build` 验证 TypeScript 类型检查与 Cloudflare Pages 边缘静态打包 0 报错 <!-- id: 50 -->
+- [x] 1. 构建纯前端双引擎语音评测核心 (`src/utils/speechEvaluation.ts`)
+  - [x] 集成 `SpeechRecognition` 英文转写与声学置信度采样
+  - [x] 集成 `AudioContext + AnalyserNode` 实时 RMS 音量包络、有效发声时长与卡顿检测
+  - [x] 实现 LCS + Levenshtein 字符级相似度对齐算法，输出准确度、流利度、完整度三维评分与红绿灯逐词诊断
+- [x] 2. 升级句读精读台跟读打分与逐词纠音 (`src/components/VirtualPager.tsx`)
+  - [x] 在 `handleToggleShadowingRecord` 录音生命周期中接入 `startSpeechEvalSession`
+  - [x] 渲染「🎯 智能跟读打分与逐词发音诊断」报告卡片（综合得分、星级、WPM 语速、三维指标徽章）
+  - [x] 支持点击诊断区任意单词重听标准读音，点击黄/红待加强词自动联动 `handleAddDictationVocab` 一键加入生词本
+- [x] 3. 升级查词气泡单词级跟读打分 (`src/components/InteractiveWord.tsx`)
+  - [x] 在查词弹窗顶栏新增 `[🎙️ 跟读打分]` 按钮与 3.2s 自动收音评测
+  - [x] 显示单词发音得分、星级与 `[▶️ 听我的发音]` 回放按钮
+- [x] 4. 编译与边缘打包验证
+  - [x] 运行 `npm run pages:build` 验证 TypeScript 与 Cloudflare Pages 边缘打包 0 报错通过

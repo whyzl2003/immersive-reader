@@ -8,12 +8,17 @@ import {
 } from "@/components/ui/popover";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { playTTS } from "@/src/lib/audioPlayer";
+import { playTTS, stopTTS } from "@/src/lib/audioPlayer";
 import { useReaderStore } from "@/src/store/useReaderStore";
 import { ROOTS_DICTIONARY } from "@/src/data/rootsDictionary";
 import { lookupOfflineWord } from "@/src/data/offlineDict";
+import {
+  startSpeechEvalSession,
+  type PronunciationEvaluationResult,
+  type SpeechEvalSession,
+} from "@/src/utils/speechEvaluation";
 import type { WordAnalysis } from "@/src/app/api/analyze-word/route";
-import { Volume2, Loader2, BookmarkPlus, BookmarkCheck } from "lucide-react";
+import { Volume2, Loader2, BookmarkPlus, BookmarkCheck, Mic, Play } from "lucide-react";
 import { toast } from "sonner";
 
 // 前端内存翻译缓存，避免高频点读重复网络请求
@@ -45,6 +50,17 @@ export function InteractiveWord({
   const [isFetchingRoots, setIsFetchingRoots] = React.useState<boolean>(false);
   const [rootsError, setRootsError] = React.useState<string | null>(null);
 
+  // 🎯 查词卡片单词跟读打分专属状态与引用
+  const [isRecordingWord, setIsRecordingWord] = React.useState(false);
+  const [isEvaluatingWord, setIsEvaluatingWord] = React.useState(false);
+  const [wordEvalResult, setWordEvalResult] = React.useState<PronunciationEvaluationResult | null>(null);
+  const [wordAudioUrl, setWordAudioUrl] = React.useState<string | null>(null);
+  const wordRecorderRef = React.useRef<MediaRecorder | null>(null);
+  const wordStreamRef = React.useRef<MediaStream | null>(null);
+  const wordEvalSessionRef = React.useRef<SpeechEvalSession | null>(null);
+  const wordAutoStopTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  const wordAudioUrlRef = React.useRef<string | null>(null);
+
   const { addVocab, vocabularyList, offlineWordCache, saveOfflineWord } = useReaderStore();
 
   const cleanWord = word.trim().replace(/^['"“‘—\-]+|['"”’—\-]+$/g, "");
@@ -55,6 +71,144 @@ export function InteractiveWord({
   const isSaved = React.useMemo(() => {
     return vocabularyList.some((v) => v.word.toLowerCase() === lowerWord);
   }, [vocabularyList, lowerWord]);
+
+  // 停止单词录音并清理硬件资源
+  const stopWordRecording = React.useCallback((abortEval = false) => {
+    if (wordAutoStopTimerRef.current) {
+      clearTimeout(wordAutoStopTimerRef.current);
+      wordAutoStopTimerRef.current = null;
+    }
+    if (abortEval && wordEvalSessionRef.current) {
+      wordEvalSessionRef.current.abort();
+      wordEvalSessionRef.current = null;
+      setIsEvaluatingWord(false);
+    }
+    if (wordRecorderRef.current && wordRecorderRef.current.state !== "inactive") {
+      try {
+        wordRecorderRef.current.stop();
+      } catch {
+        // 忽略停止异常
+      }
+    }
+    if (wordStreamRef.current) {
+      wordStreamRef.current.getTracks().forEach((t) => t.stop());
+      wordStreamRef.current = null;
+    }
+    setIsRecordingWord(false);
+  }, []);
+
+  // 气泡关闭或组件卸载时自动清理单词录音与 Blob URL
+  React.useEffect(() => {
+    if (!open) {
+      stopWordRecording(true);
+    }
+  }, [open, stopWordRecording]);
+
+  React.useEffect(() => {
+    return () => {
+      stopWordRecording(true);
+      if (wordAudioUrlRef.current) {
+        try {
+          URL.revokeObjectURL(wordAudioUrlRef.current);
+        } catch {
+          // 忽略释放异常
+        }
+        wordAudioUrlRef.current = null;
+      }
+    };
+  }, [stopWordRecording]);
+
+  // 启动 / 停止单词跟读打分
+  const handleToggleWordShadowing = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+
+    if (isRecordingWord) {
+      stopWordRecording(false);
+      return;
+    }
+
+    stopTTS();
+    stopWordRecording(true);
+
+    if (
+      typeof navigator === "undefined" ||
+      !navigator.mediaDevices ||
+      typeof navigator.mediaDevices.getUserMedia !== "function"
+    ) {
+      toast.error("未能获取麦克风权限，请检查浏览器设置");
+      return;
+    }
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      wordStreamRef.current = stream;
+      const chunks: BlobPart[] = [];
+
+      setWordEvalResult(null);
+      const evalSession = startSpeechEvalSession(stream);
+      wordEvalSessionRef.current = evalSession;
+
+      const recorder = new MediaRecorder(stream);
+      wordRecorderRef.current = recorder;
+
+      recorder.ondataavailable = (ev) => {
+        if (ev.data && ev.data.size > 0) {
+          chunks.push(ev.data);
+        }
+      };
+
+      recorder.onstop = async () => {
+        if (wordAutoStopTimerRef.current) {
+          clearTimeout(wordAutoStopTimerRef.current);
+          wordAutoStopTimerRef.current = null;
+        }
+        if (wordStreamRef.current) {
+          wordStreamRef.current.getTracks().forEach((t) => t.stop());
+          wordStreamRef.current = null;
+        }
+        setIsRecordingWord(false);
+
+        if (chunks.length > 0) {
+          const blob = new Blob(chunks, { type: recorder.mimeType || "audio/webm" });
+          const url = URL.createObjectURL(blob);
+          if (wordAudioUrlRef.current) {
+            try {
+              URL.revokeObjectURL(wordAudioUrlRef.current);
+            } catch {
+              // 忽略释放异常
+            }
+          }
+          wordAudioUrlRef.current = url;
+          setWordAudioUrl(url);
+        }
+
+        const activeSession = wordEvalSessionRef.current;
+        wordEvalSessionRef.current = null;
+        if (activeSession) {
+          setIsEvaluatingWord(true);
+          try {
+            const res = await activeSession.stopAndEvaluate(cleanWord);
+            setWordEvalResult(res);
+          } catch {
+            // 静默容错
+          } finally {
+            setIsEvaluatingWord(false);
+          }
+        }
+      };
+
+      recorder.start();
+      setIsRecordingWord(true);
+
+      // 单词跟读最长录制 3.2 秒自动收音评测，免去二次点击负担
+      wordAutoStopTimerRef.current = setTimeout(() => {
+        stopWordRecording(false);
+      }, 3200);
+    } catch {
+      toast.error("未能获取麦克风权限，请检查浏览器设置");
+      setIsRecordingWord(false);
+    }
+  };
 
   // 点击单词触发点读：即刻发音 + 弹出气泡获取释义 + 词源展示（离线零网络直接秒出，不转圈）
   const handleClick = async (e: React.MouseEvent) => {
@@ -243,26 +397,88 @@ export function InteractiveWord({
         className="w-80 p-3.5 bg-popover text-popover-foreground border-border shadow-md rounded-xl z-50 animate-in fade-in-50 zoom-in-95"
       >
         <div className="space-y-2">
-          {/* 气泡顶栏：单词标题与重播发音 */}
-          <div className="flex items-center justify-between border-b border-border/50 pb-2">
+          {/* 气泡顶栏：单词标题、标准发音与 🎙️ 单词跟读打分 */}
+          <div className="flex items-center justify-between border-b border-border/50 pb-2 gap-1.5">
             <div className="flex items-center gap-1.5 min-w-0">
               <span className="font-serif font-bold text-base text-foreground truncate">
                 {cleanWord}
               </span>
             </div>
-            <Button
-              variant="ghost"
-              size="icon"
-              className="h-7 w-7 text-primary hover:bg-primary/10 hover:text-primary shrink-0"
-              onClick={(e) => {
-                e.stopPropagation();
-                playTTS(cleanWord);
-              }}
-              title="重新朗读发音"
-            >
-              <Volume2 className="w-4 h-4" />
-            </Button>
+            <div className="flex items-center gap-1 shrink-0">
+              <Button
+                variant={isRecordingWord ? "default" : "outline"}
+                size="sm"
+                className={`h-7 px-2 text-[11px] font-serif gap-1 cursor-pointer ${
+                  isRecordingWord
+                    ? "bg-red-600 hover:bg-red-700 text-white animate-pulse"
+                    : "border-primary/30 text-primary hover:bg-primary/10"
+                }`}
+                onClick={handleToggleWordShadowing}
+                title={isRecordingWord ? "点击停止并评分" : "跟读该单词并测评发音准确度"}
+              >
+                <Mic className="w-3 h-3" />
+                <span>{isRecordingWord ? "录音中..." : "跟读打分"}</span>
+              </Button>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-7 w-7 text-primary hover:bg-primary/10 hover:text-primary shrink-0 cursor-pointer"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  playTTS(cleanWord);
+                }}
+                title="重新朗读标准发音"
+              >
+                <Volume2 className="w-4 h-4" />
+              </Button>
+            </div>
           </div>
+
+          {/* 🎯 单词跟读打分结果微缩横幅 */}
+          {(isEvaluatingWord || wordEvalResult) && (
+            <div className="rounded-lg bg-muted/45 border border-border/60 px-2.5 py-1.5 text-[11px] font-serif flex items-center justify-between gap-2 animate-in fade-in-50">
+              {isEvaluatingWord ? (
+                <span className="inline-flex items-center gap-1.5 text-muted-foreground">
+                  <Loader2 className="w-3 h-3 animate-spin text-primary" />
+                  <span>正在评测单词发音...</span>
+                </span>
+              ) : wordEvalResult ? (
+                <>
+                  <div className="flex items-center gap-1.5 min-w-0">
+                    <span
+                      className={`font-bold px-1.5 py-0.5 rounded border ${
+                        wordEvalResult.overallScore >= 85
+                          ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border-emerald-500/30"
+                          : wordEvalResult.overallScore >= 68
+                          ? "bg-amber-500/20 text-amber-800 dark:text-amber-200 border-amber-500/35"
+                          : "bg-red-500/15 text-red-700 dark:text-red-300 border-red-500/35"
+                      }`}
+                    >
+                      🎯 {wordEvalResult.overallScore}分
+                    </span>
+                    <span className="truncate text-foreground/85">
+                      {"⭐".repeat(Math.max(1, wordEvalResult.stars))}
+                    </span>
+                  </div>
+                  {wordAudioUrl && (
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        const audio = new Audio(wordAudioUrl);
+                        audio.play().catch(() => {});
+                      }}
+                      className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-background border border-border/60 text-primary hover:bg-primary/10 shrink-0 cursor-pointer"
+                      title="回放我的单词跟读录音"
+                    >
+                      <Play className="w-2.5 h-2.5 fill-current" />
+                      <span>听我的发音</span>
+                    </button>
+                  )}
+                </>
+              ) : null}
+            </div>
+          )}
 
           {/* 基础释义内容显示区域 */}
           <div className="text-xs leading-relaxed min-h-[28px] flex items-center">
