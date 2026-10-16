@@ -2271,10 +2271,10 @@ export function VirtualPager() {
                               title="使用当前设定语速朗读此单句（快捷键：空格）"
                             >
                               <Play className="w-3.5 h-3.5 fill-current" />
-                              <span>▶ 听这一句</span>
+                              <span>听这一句</span>
                             </Button>
 
-                            {/* [⏮ 上一句] */}
+                            {/* [上一句] */}
                             <Button
                               variant="outline"
                               size="sm"
@@ -2292,10 +2292,10 @@ export function VirtualPager() {
                               title="切换到上一句（快捷键：←）"
                             >
                               <SkipBack className="w-3.5 h-3.5" />
-                              <span>⏮ 上一句</span>
+                              <span>上一句</span>
                             </Button>
 
-                            {/* [⏭ 下一句] */}
+                            {/* [下一句] */}
                             <Button
                               variant="outline"
                               size="sm"
@@ -2312,7 +2312,7 @@ export function VirtualPager() {
                               className="h-8 px-2.5 text-xs font-serif gap-1 border-amber-500/35 bg-background/80 hover:bg-amber-500/10 cursor-pointer disabled:opacity-40"
                               title="切换到下一句（快捷键：→）"
                             >
-                              <span>⏭ 下一句</span>
+                              <span>下一句</span>
                               <SkipForward className="w-3.5 h-3.5" />
                             </Button>
 
@@ -2385,10 +2385,10 @@ export function VirtualPager() {
                               title="从当前选中句开始，自动一句接一句连续播放至本段末尾"
                             >
                               <Repeat className="w-3.5 h-3.5" />
-                              <span>🔁 从本句连续听读</span>
+                              <span>从本句连续听读</span>
                             </Button>
 
-                            {/* [⏹ 停止] */}
+                            {/* [停止] */}
                             <Button
                               variant="outline"
                               size="sm"
@@ -2413,7 +2413,7 @@ export function VirtualPager() {
                               title="立即中断当前音频流、回声对比或连续听读队列"
                             >
                               <Square className="w-3 h-3 fill-current" />
-                              <span>⏹ 停止</span>
+                              <span>停止</span>
                             </Button>
 
                             {/* 🎙️ 原声跟读对比（Echo Shadowing 录音与连播）按钮组 */}
@@ -2695,7 +2695,7 @@ export function VirtualPager() {
                                       title="重新播放本句发音 (Cmd/Ctrl + R)"
                                     >
                                       <RotateCcw className="w-3.5 h-3.5" />
-                                      <span>🔁 重听本句</span>
+                                      <span>重听本句</span>
                                     </Button>
                                     <Button
                                       size="sm"
@@ -2708,7 +2708,7 @@ export function VirtualPager() {
                                       title="提交并运行三色 Diff 核对 (Cmd/Ctrl + Enter)"
                                     >
                                       <CheckCircle2 className="w-3.5 h-3.5" />
-                                      <span>✅ 核对本句</span>
+                                      <span>核对本句</span>
                                     </Button>
                                   </div>
                                 </div>
@@ -2781,7 +2781,7 @@ export function VirtualPager() {
                                       className="h-7 px-2.5 text-xs font-serif gap-1 bg-amber-600 hover:bg-amber-700 text-white shadow-2xs cursor-pointer disabled:opacity-40"
                                       title="切换到下一句并自动播放语音继续听打"
                                     >
-                                      <span>⏭ 听打下一句</span>
+                                      <span>听打下一句</span>
                                       <SkipForward className="w-3 h-3" />
                                     </Button>
                                   </div>
@@ -2977,10 +2977,10 @@ export function VirtualPager() {
                             title="重新播放该段朗读音频 (可在输入框内按 Cmd/Ctrl+R)"
                           >
                             <RotateCcw className="w-3 h-3" />
-                            <span>🔁 重听</span>
+                            <span>重听</span>
                           </Button>
 
-                          {/* 👁️ 偷看/隐藏原文按钮 */}
+                          {/* 偷看/隐藏原文按钮 */}
                           <Button
                             variant="ghost"
                             size="sm"
@@ -2989,7 +2989,7 @@ export function VirtualPager() {
                             title={showOriginal ? "隐藏原文以防偷看" : "临时查看原文"}
                           >
                             {showOriginal ? <EyeOff className="w-3 h-3" /> : <Eye className="w-3 h-3" />}
-                            <span>{showOriginal ? "隐藏原文" : "👁️ 偷看"}</span>
+                            <span>{showOriginal ? "隐藏原文" : "偷看"}</span>
                           </Button>
 
                           {/* 退出听写按钮 */}
