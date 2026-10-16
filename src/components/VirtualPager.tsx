@@ -24,7 +24,7 @@ import { TocNavigation } from "@/src/components/TocNavigation";
 import { GlobalSearch } from "@/src/components/GlobalSearch";
 import { BookshelfPanel } from "@/src/components/BookshelfPanel";
 import { OfflinePreloadButton } from "@/src/components/OfflinePreloadButton";
-import { renderTokenizedParagraph } from "@/src/lib/tokenizer";
+import { renderTokenizedParagraph, renderChunkedSentence } from "@/src/lib/tokenizer";
 import { playTTS, stopTTS, updateTTSPlaybackRate } from "@/src/lib/audioPlayer";
 import { splitParagraphIntoSentences } from "@/src/utils/edgeTTS";
 import { lookupOfflineWord } from "@/src/data/offlineDict";
@@ -54,6 +54,9 @@ import {
   Repeat,
   ChevronDown,
   ChevronUp,
+  Mic,
+  Scissors,
+  Star,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -191,7 +194,9 @@ export function VirtualPager() {
     prevPage,
     nextPage,
     lastPage,
+    notesList,
     addNote,
+    removeNote,
     addVocab,
     targetParagraphIndex,
     setTargetParagraphIndex,
@@ -278,6 +283,7 @@ export function VirtualPager() {
 
   // 🔍 句读（Sentence Reader 逐句精读与多档变速跟读）专属状态
   const [expandedSentenceReaders, setExpandedSentenceReaders] = React.useState<Record<number, boolean>>({});
+  const [activeSentenceReaderPara, setActiveSentenceReaderPara] = React.useState<number | null>(null);
   const [sentenceIndices, setSentenceIndices] = React.useState<Record<number, number>>({});
   const [sentencePlayingState, setSentencePlayingState] = React.useState<{
     paraIndex: number;
@@ -288,13 +294,28 @@ export function VirtualPager() {
   const [loadingSentenceTrans, setLoadingSentenceTrans] = React.useState<Record<string, boolean>>({});
   const [sentenceTransErrors, setSentenceTransErrors] = React.useState<Record<string, string>>({});
 
-  // ✍️ 句读单句听打（Sentence Dictation）专属状态
+  // ✂️ 意群斜杠断句与主干透视开关状态
+  const [isChunkingMode, setIsChunkingMode] = React.useState<boolean>(false);
+
+  // 🎙️ 原声跟读对比（Echo Shadowing 录音与连播）状态与引用
+  const [recordingParaIndex, setRecordingParaIndex] = React.useState<number | null>(null);
+  const [shadowingAudioUrls, setShadowingAudioUrls] = React.useState<Record<number, string>>({});
+  const [playingUserAudioPara, setPlayingUserAudioPara] = React.useState<number | null>(null);
+  const [echoComparingPara, setEchoComparingPara] = React.useState<number | null>(null);
+  const mediaRecorderRef = React.useRef<MediaRecorder | null>(null);
+  const mediaStreamRef = React.useRef<MediaStream | null>(null);
+  const audioChunksRef = React.useRef<BlobPart[]>([]);
+  const userAudioPlayerRef = React.useRef<HTMLAudioElement | null>(null);
+  const shadowingUrlsRef = React.useRef<Record<number, string>>({});
+
+  // ✍️ 句读单句听打（Sentence Dictation）专属状态与输入框引用
   const [sentenceDictationOpen, setSentenceDictationOpen] = React.useState<Record<number, boolean>>({});
   const [sentenceDictationInputs, setSentenceDictationInputs] = React.useState<Record<number, string>>({});
   const [sentenceDictationResults, setSentenceDictationResults] = React.useState<
     Record<number, DictationResult | null>
   >({});
   const [sentenceDictationPeeks, setSentenceDictationPeeks] = React.useState<Record<number, boolean>>({});
+  const sentenceDictationTextareaRefs = React.useRef<Map<number, HTMLTextAreaElement>>(new Map());
 
   // 连续听读队列同步会话引用，避免异步回调闭包过期
   const continuousPlayRef = React.useRef<{
@@ -312,14 +333,78 @@ export function VirtualPager() {
   // 移动端轻触唤出段落工具栏状态（纯净沉浸阅读：手机端默认隐藏，轻点段落按需呼出）
   const [activeParagraphIndex, setActiveParagraphIndex] = React.useState<number | null>(null);
 
-  // 停止句读音频流与连续队列
+  // 停止正在播放的用户跟读录音
+  const stopUserRecordedAudio = React.useCallback(() => {
+    if (userAudioPlayerRef.current) {
+      try {
+        userAudioPlayerRef.current.pause();
+        userAudioPlayerRef.current.currentTime = 0;
+      } catch {
+        // 忽略音频暂停异常
+      }
+      userAudioPlayerRef.current = null;
+    }
+    setPlayingUserAudioPara(null);
+    setEchoComparingPara(null);
+  }, []);
+
+  // 停止正在进行的麦克风录音并释放硬件流
+  const stopActiveRecording = React.useCallback(() => {
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
+      try {
+        mediaRecorderRef.current.stop();
+      } catch {
+        // 忽略停止异常
+      }
+    }
+    if (mediaStreamRef.current) {
+      mediaStreamRef.current.getTracks().forEach((track) => track.stop());
+      mediaStreamRef.current = null;
+    }
+    setRecordingParaIndex(null);
+  }, []);
+
+  // 清理释放指定段落的跟读录音 Blob URL
+  const revokeShadowingUrl = React.useCallback((paraIndex: number) => {
+    const oldUrl = shadowingUrlsRef.current[paraIndex];
+    if (oldUrl) {
+      try {
+        URL.revokeObjectURL(oldUrl);
+      } catch {
+        // 忽略 URL 释放异常
+      }
+      delete shadowingUrlsRef.current[paraIndex];
+    }
+    setShadowingAudioUrls((prev) => {
+      if (!prev[paraIndex]) return prev;
+      const next = { ...prev };
+      delete next[paraIndex];
+      return next;
+    });
+  }, []);
+
+  // 清理释放所有跟读录音 Blob URL
+  const revokeAllShadowingUrls = React.useCallback(() => {
+    Object.values(shadowingUrlsRef.current).forEach((url) => {
+      try {
+        URL.revokeObjectURL(url);
+      } catch {
+        // 忽略 URL 释放异常
+      }
+    });
+    shadowingUrlsRef.current = {};
+    setShadowingAudioUrls({});
+  }, []);
+
+  // 停止句读音频流、连续队列与回声对比
   const stopSentenceReaderAudio = React.useCallback(() => {
     continuousPlayRef.current.active = false;
     continuousPlayRef.current.sessionId++;
     stopTTS();
+    stopUserRecordedAudio();
     setSentencePlayingState(null);
     setActivePlayingIndex(null);
-  }, [setActivePlayingIndex]);
+  }, [setActivePlayingIndex, stopUserRecordedAudio]);
 
   // 切换书籍或翻页时自动收起移动端已激活的段落工具栏
   React.useEffect(() => {
@@ -373,12 +458,15 @@ export function VirtualPager() {
     continuousPlayRef.current.active = false;
     continuousPlayRef.current.sessionId++;
     stopTTS();
+    stopActiveRecording();
+    stopUserRecordedAudio();
+    revokeAllShadowingUrls();
     setSentencePlayingState(null);
     setActivePlayingIndex(null);
     setActiveDictationIndex(null);
     setDictationResult(null);
     setShowOriginal(false);
-  }, [currentPage, targetParagraphIndex, setActivePlayingIndex]);
+  }, [currentPage, targetParagraphIndex, setActivePlayingIndex, stopActiveRecording, stopUserRecordedAudio, revokeAllShadowingUrls]);
 
   // 清洗 HTML 标签以获取纯净的朗读与翻译文本
   const stripHtml = React.useCallback((text: string): string => {
@@ -386,16 +474,19 @@ export function VirtualPager() {
     return text.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
   }, []);
 
-  // 组件卸载时安全停止正在朗读的音频并重置高亮状态
+  // 组件卸载时安全停止正在朗读的音频、录音并释放所有 Blob URL
   React.useEffect(() => {
     return () => {
       continuousPlayRef.current.active = false;
       continuousPlayRef.current.sessionId++;
       stopTTS();
+      stopActiveRecording();
+      stopUserRecordedAudio();
+      revokeAllShadowingUrls();
       setActivePlayingIndex(null);
       setActiveDictationIndex(null);
     };
-  }, [setActivePlayingIndex]);
+  }, [setActivePlayingIndex, stopActiveRecording, stopUserRecordedAudio, revokeAllShadowingUrls]);
 
   // 切换全局语速并实时更新正在播放的音频实例
   const handleSpeedChange = (newSpeed: number) => {
@@ -409,7 +500,7 @@ export function VirtualPager() {
     toast.info(`已切换朗读速度为 ${labelMap[newSpeed] || `${newSpeed}x`}`);
   };
 
-  // 展开 / 收起内联“🔍 句读”精读台面板
+  // 展开 / 收起内联“🔍 句读”精读台面板（关闭时自动清理释放录音 Blob URL）
   const handleToggleSentenceReader = (rawPara: string, index: number) => {
     if (rawPara.trim().startsWith("<img")) {
       toast.info("书籍插图不支持逐句精读");
@@ -419,13 +510,24 @@ export function VirtualPager() {
     const isCurrentlyOpen = !!expandedSentenceReaders[index];
     if (isCurrentlyOpen) {
       setExpandedSentenceReaders((prev) => ({ ...prev, [index]: false }));
+      if (activeSentenceReaderPara === index) {
+        setActiveSentenceReaderPara(null);
+      }
       if (sentencePlayingState?.paraIndex === index) {
         stopSentenceReaderAudio();
       }
+      if (recordingParaIndex === index) {
+        stopActiveRecording();
+      }
+      if (playingUserAudioPara === index || echoComparingPara === index) {
+        stopUserRecordedAudio();
+      }
+      revokeShadowingUrl(index);
       return;
     }
 
     setExpandedSentenceReaders((prev) => ({ ...prev, [index]: true }));
+    setActiveSentenceReaderPara(index);
     setSentenceIndices((prev) => ({
       ...prev,
       [index]: prev[index] ?? 0,
@@ -437,10 +539,12 @@ export function VirtualPager() {
     const cleanSent = stripHtml(sentence);
     if (!cleanSent) return;
 
-    // 掐断之前的连续队列或其它段落音频
+    setActiveSentenceReaderPara(paraIndex);
+    // 掐断之前的连续队列、录音播放或其它段落音频
     continuousPlayRef.current.active = false;
     const session = ++continuousPlayRef.current.sessionId;
     stopTTS();
+    stopUserRecordedAudio();
 
     setSentencePlayingState({
       paraIndex,
@@ -481,7 +585,9 @@ export function VirtualPager() {
   ) => {
     if (!sentences || sentences.length === 0) return;
 
+    setActiveSentenceReaderPara(paraIndex);
     stopTTS();
+    stopUserRecordedAudio();
     const session = ++continuousPlayRef.current.sessionId;
     continuousPlayRef.current = {
       active: true,
@@ -560,17 +666,27 @@ export function VirtualPager() {
     playNextStep(startSentIdx);
   };
 
-  // 句读面板：切换上一句 / 下一句（自动清空上一句听打内容与核对状态，若处于听打模式则自动播放新切换的这一句）
+  // 句读面板：切换上一句 / 下一句（自动清空上一句听打与录音状态，若处于听打模式则自动播放新切换的这一句）
   const handleStepSentence = (
     paraIndex: number,
     nextIdx: number,
     totalCount: number,
     sentencesList?: string[]
   ) => {
+    setActiveSentenceReaderPara(paraIndex);
     const clampedIdx = Math.max(0, Math.min(nextIdx, totalCount - 1));
     if (sentencePlayingState?.paraIndex === paraIndex) {
       stopSentenceReaderAudio();
     }
+    if (recordingParaIndex === paraIndex) {
+      stopActiveRecording();
+    }
+    if (playingUserAudioPara === paraIndex || echoComparingPara === paraIndex) {
+      stopUserRecordedAudio();
+    }
+    // 切换上下句时自动清理释放上一句的跟读录音 Blob URL
+    revokeShadowingUrl(paraIndex);
+
     setSentenceIndices((prev) => ({ ...prev, [paraIndex]: clampedIdx }));
     // 切换句子时默认收起中文译文，防剧透保护精读思考
     setExpandedSentenceTrans((prev) => ({ ...prev, [paraIndex]: false }));
@@ -591,6 +707,7 @@ export function VirtualPager() {
     paraIndex: number,
     sentIdx: number
   ) => {
+    setActiveSentenceReaderPara(paraIndex);
     const isCurrentlyOpen = !!sentenceDictationOpen[paraIndex];
     if (isCurrentlyOpen) {
       setSentenceDictationOpen((prev) => ({ ...prev, [paraIndex]: false }));
@@ -636,6 +753,410 @@ export function VirtualPager() {
       );
     }
   };
+
+  // 🎙️ 句读面板：启动 / 停止原声跟读录音（纯前端 MediaRecorder）
+  const handleToggleShadowingRecord = async (paraIndex: number) => {
+    setActiveSentenceReaderPara(paraIndex);
+
+    // 若当前段落正在录音，点击则结束录音
+    if (recordingParaIndex === paraIndex) {
+      stopActiveRecording();
+      return;
+    }
+
+    // 录音前先停止正在播放的 TTS 语音、其它录音或回声对比
+    stopSentenceReaderAudio();
+    stopActiveRecording();
+
+    if (
+      typeof navigator === "undefined" ||
+      !navigator.mediaDevices ||
+      typeof navigator.mediaDevices.getUserMedia !== "function"
+    ) {
+      toast.error("未能获取麦克风权限，请检查浏览器设置");
+      return;
+    }
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      mediaStreamRef.current = stream;
+      audioChunksRef.current = [];
+
+      const recorder = new MediaRecorder(stream);
+      mediaRecorderRef.current = recorder;
+
+      recorder.ondataavailable = (event) => {
+        if (event.data && event.data.size > 0) {
+          audioChunksRef.current.push(event.data);
+        }
+      };
+
+      recorder.onstop = () => {
+        if (mediaStreamRef.current) {
+          mediaStreamRef.current.getTracks().forEach((track) => track.stop());
+          mediaStreamRef.current = null;
+        }
+        setRecordingParaIndex(null);
+
+        if (audioChunksRef.current.length === 0) return;
+
+        const mimeType = recorder.mimeType || "audio/webm";
+        const audioBlob = new Blob(audioChunksRef.current, { type: mimeType });
+        const blobUrl = URL.createObjectURL(audioBlob);
+
+        // 释放旧 URL 并保存新录音 Blob URL
+        const prevUrl = shadowingUrlsRef.current[paraIndex];
+        if (prevUrl) {
+          try {
+            URL.revokeObjectURL(prevUrl);
+          } catch {
+            // 忽略释放异常
+          }
+        }
+        shadowingUrlsRef.current[paraIndex] = blobUrl;
+        setShadowingAudioUrls((prev) => ({
+          ...prev,
+          [paraIndex]: blobUrl,
+        }));
+
+        toast.success("🎙️ 跟读录音已完成！", {
+          description: "可点击「▶️ 听我的发音」或「🔄 原音+我的对比」体验回声对比法。",
+        });
+      };
+
+      recorder.start();
+      setRecordingParaIndex(paraIndex);
+    } catch {
+      toast.error("未能获取麦克风权限，请检查浏览器设置");
+      setRecordingParaIndex(null);
+    }
+  };
+
+  // ▶️ 句读面板：单独播放用户刚刚录下的跟读发音
+  const handlePlayUserRecording = (paraIndex: number) => {
+    setActiveSentenceReaderPara(paraIndex);
+    const url = shadowingAudioUrls[paraIndex];
+    if (!url) return;
+
+    // 若当前正在单独播放用户录音，再次点击则停止
+    if (playingUserAudioPara === paraIndex && echoComparingPara !== paraIndex) {
+      stopUserRecordedAudio();
+      return;
+    }
+
+    stopSentenceReaderAudio();
+    stopActiveRecording();
+
+    const userAudio = new Audio(url);
+    userAudioPlayerRef.current = userAudio;
+    setPlayingUserAudioPara(paraIndex);
+
+    userAudio.onended = () => {
+      setPlayingUserAudioPara(null);
+      userAudioPlayerRef.current = null;
+    };
+    userAudio.onerror = () => {
+      setPlayingUserAudioPara(null);
+      userAudioPlayerRef.current = null;
+      toast.error("播放跟读录音失败");
+    };
+
+    userAudio.play().catch(() => {
+      setPlayingUserAudioPara(null);
+      userAudioPlayerRef.current = null;
+    });
+  };
+
+  // 🔄 句读面板：回声对比法（先由 Ava 按当前语速朗读原句，onEnd 瞬间无缝接力播放用户跟读录音）
+  const handleEchoCompare = (
+    sentence: string,
+    paraIndex: number,
+    sentIdx: number
+  ) => {
+    setActiveSentenceReaderPara(paraIndex);
+    const url = shadowingAudioUrls[paraIndex];
+    if (!url) return;
+
+    // 若已在回声对比中，点击则立即停止
+    if (echoComparingPara === paraIndex) {
+      stopSentenceReaderAudio();
+      return;
+    }
+
+    const cleanSent = stripHtml(sentence);
+    if (!cleanSent) return;
+
+    stopSentenceReaderAudio();
+    stopActiveRecording();
+
+    const session = ++continuousPlayRef.current.sessionId;
+    setEchoComparingPara(paraIndex);
+    setSentencePlayingState({
+      paraIndex,
+      sentenceIndex: sentIdx,
+      mode: "single",
+    });
+    setActivePlayingIndex(paraIndex);
+
+    playTTS(cleanSent, {
+      playbackRate: ttsSpeed,
+      onStart: () => {
+        if (continuousPlayRef.current.sessionId !== session) return;
+        setSentencePlayingState({
+          paraIndex,
+          sentenceIndex: sentIdx,
+          mode: "single",
+        });
+        setActivePlayingIndex(paraIndex);
+      },
+      onEnd: () => {
+        if (continuousPlayRef.current.sessionId !== session) return;
+        setSentencePlayingState(null);
+        setActivePlayingIndex(null);
+
+        // 原音结束瞬间，无缝接力播放用户跟读录音
+        const activeUrl = shadowingUrlsRef.current[paraIndex] || url;
+        if (!activeUrl) {
+          setEchoComparingPara(null);
+          return;
+        }
+
+        const userAudio = new Audio(activeUrl);
+        userAudioPlayerRef.current = userAudio;
+        setPlayingUserAudioPara(paraIndex);
+
+        userAudio.onended = () => {
+          setPlayingUserAudioPara(null);
+          setEchoComparingPara(null);
+          userAudioPlayerRef.current = null;
+        };
+        userAudio.onerror = () => {
+          setPlayingUserAudioPara(null);
+          setEchoComparingPara(null);
+          userAudioPlayerRef.current = null;
+        };
+        userAudio.play().catch(() => {
+          setPlayingUserAudioPara(null);
+          setEchoComparingPara(null);
+          userAudioPlayerRef.current = null;
+        });
+      },
+      onError: () => {
+        if (continuousPlayRef.current.sessionId !== session) return;
+        setSentencePlayingState(null);
+        setActivePlayingIndex(null);
+        setEchoComparingPara(null);
+      },
+    });
+  };
+
+  // ⭐ 句读面板：金句一键收藏（打通“📒 我的笔记”，连同单句译文与【✨ 句读金句收藏】标签存入）
+  const handleToggleFavoriteSentence = (
+    sentence: string,
+    paraIndex: number,
+    totalSentencesInPara: number
+  ) => {
+    setActiveSentenceReaderPara(paraIndex);
+    const cleanSent = stripHtml(sentence).replace(/\s+/g, " ").trim();
+    if (!cleanSent) return;
+
+    const existingParaNote = notesList.find(
+      (n) =>
+        (n.bookId || DEFAULT_BOOK_ID) === currentBook.id &&
+        n.paragraphIndex === paraIndex
+    );
+
+    const rawTrans =
+      sentenceTranslations[sentence] ||
+      sentenceTranslations[cleanSent] ||
+      (totalSentencesInPara === 1 ? bookTranslations[paraIndex] : "");
+    const validTrans =
+      rawTrans &&
+      !rawTrans.startsWith("单句翻译") &&
+      !rawTrans.startsWith("翻译获取失败") &&
+      !rawTrans.startsWith("✈️")
+        ? rawTrans.trim()
+        : "";
+
+    const isAlreadyFavorited = Boolean(
+      existingParaNote &&
+        (existingParaNote.context.trim() === cleanSent ||
+          existingParaNote.context.includes(cleanSent) ||
+          existingParaNote.note.includes(cleanSent)) &&
+        existingParaNote.note.includes("【✨ 句读金句收藏】")
+    );
+
+    if (isAlreadyFavorited && existingParaNote) {
+      // 若此前收藏时还未加载中文译文，而现在已有中文译文，则自动补全中文译文
+      if (validTrans && !existingParaNote.note.includes(validTrans)) {
+        const enrichedNote = `${existingParaNote.note}\n中文参考：${validTrans}`;
+        addNote({
+          paragraphIndex: paraIndex,
+          page: Math.floor(paraIndex / pageSize) + 1,
+          context: existingParaNote.context,
+          note: enrichedNote,
+          bookId: currentBook.id,
+          bookTitle: currentBook.title,
+        });
+        toast.success("🌟 已将本句中文译文同步更新至「📒 我的笔记」！");
+        return;
+      }
+
+      // 若该段笔记仅由此金句构成，再次点击支持取消收藏
+      if (
+        existingParaNote.context.trim() === cleanSent &&
+        existingParaNote.note.startsWith("【✨ 句读金句收藏】")
+      ) {
+        removeNote(existingParaNote.id);
+        toast.info("已取消收藏该金句");
+        return;
+      }
+
+      toast.info("🌟 该金句已收藏在「📒 我的笔记」中！");
+      return;
+    }
+
+    const favoriteTagContent = validTrans
+      ? `【✨ 句读金句收藏】\n中文参考：${validTrans}`
+      : `【✨ 句读金句收藏】`;
+
+    if (existingParaNote) {
+      const combinedContext = existingParaNote.context.includes(cleanSent)
+        ? existingParaNote.context
+        : `${existingParaNote.context}\n${cleanSent}`;
+      const combinedNote = `${existingParaNote.note}\n\n${favoriteTagContent}（“${cleanSent}”）`;
+      addNote({
+        paragraphIndex: paraIndex,
+        page: Math.floor(paraIndex / pageSize) + 1,
+        context: combinedContext,
+        note: combinedNote,
+        bookId: currentBook.id,
+        bookTitle: currentBook.title,
+      });
+    } else {
+      addNote({
+        paragraphIndex: paraIndex,
+        page: Math.floor(paraIndex / pageSize) + 1,
+        context: cleanSent,
+        note: favoriteTagContent,
+        bookId: currentBook.id,
+        bookTitle: currentBook.title,
+      });
+    }
+
+    toast.success("🌟 金句已收藏至「📒 我的笔记」！", {
+      description: validTrans
+        ? "已连同本句中文译文及所属书名一并收录，支持一键回到原文或导出 Obsidian。"
+        : "已绑定所属书名与段落溯源，可在「📒 我的笔记」中查看或导出 Obsidian。",
+    });
+  };
+
+  // ⌨️ 句读面板：全键盘极客操控心流（Space 重听/停止 · ←/→ 切换上下句 · D 听打本句 · C 意群断句）
+  React.useEffect(() => {
+    const openParaKeys = Object.keys(expandedSentenceReaders)
+      .map(Number)
+      .filter((idx) => expandedSentenceReaders[idx]);
+
+    if (openParaKeys.length === 0) return;
+
+    const targetParaIndex =
+      activeSentenceReaderPara !== null &&
+      expandedSentenceReaders[activeSentenceReaderPara]
+        ? activeSentenceReaderPara
+        : openParaKeys[0];
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+
+      // 当焦点位于任何 input / textarea / select 或可编辑区域内时不触发全局句读快捷键
+      const activeEl = document.activeElement as HTMLElement | null;
+      if (
+        activeEl &&
+        (activeEl.tagName === "INPUT" ||
+          activeEl.tagName === "TEXTAREA" ||
+          activeEl.tagName === "SELECT" ||
+          activeEl.isContentEditable)
+      ) {
+        return;
+      }
+
+      const rawPara = activeParagraphs[targetParaIndex];
+      if (!rawPara || rawPara.trim().startsWith("<img")) return;
+
+      const cleanPara = stripHtml(rawPara);
+      const sentences = splitParagraphIntoSentences(cleanPara);
+      const totalSentences = Math.max(1, sentences.length);
+      const currentSentIdx = Math.min(
+        Math.max(0, sentenceIndices[targetParaIndex] ?? 0),
+        totalSentences - 1
+      );
+      const currentSentence = sentences[currentSentIdx] || cleanPara;
+
+      if (e.code === "Space" || e.key === " ") {
+        e.preventDefault();
+        const isCurrentParaPlaying =
+          sentencePlayingState?.paraIndex === targetParaIndex ||
+          activePlayingIndex === targetParaIndex ||
+          playingUserAudioPara === targetParaIndex ||
+          echoComparingPara === targetParaIndex;
+        if (isCurrentParaPlaying) {
+          stopSentenceReaderAudio();
+        } else {
+          handlePlaySingleSentence(
+            currentSentence,
+            targetParaIndex,
+            currentSentIdx
+          );
+        }
+      } else if (e.code === "ArrowLeft" || e.key === "ArrowLeft") {
+        e.preventDefault();
+        if (currentSentIdx > 0) {
+          handleStepSentence(
+            targetParaIndex,
+            currentSentIdx - 1,
+            totalSentences,
+            sentences
+          );
+        }
+      } else if (e.code === "ArrowRight" || e.key === "ArrowRight") {
+        e.preventDefault();
+        if (currentSentIdx < totalSentences - 1) {
+          handleStepSentence(
+            targetParaIndex,
+            currentSentIdx + 1,
+            totalSentences,
+            sentences
+          );
+        }
+      } else if (e.code === "KeyD" || e.key === "d" || e.key === "D") {
+        e.preventDefault();
+        if (!sentenceDictationOpen[targetParaIndex]) {
+          handleToggleSentenceDictation(
+            currentSentence,
+            targetParaIndex,
+            currentSentIdx
+          );
+        }
+        setTimeout(() => {
+          sentenceDictationTextareaRefs.current.get(targetParaIndex)?.focus();
+        }, 40);
+      } else if (e.code === "KeyC" || e.key === "c" || e.key === "C") {
+        e.preventDefault();
+        setIsChunkingMode((prev) => {
+          const next = !prev;
+          toast.info(
+            next
+              ? "✂️ 已开启意群断句与主干透视"
+              : "已关闭意群断句"
+          );
+          return next;
+        });
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  });
 
   // 句读面板：按需获取并缓存单句中文参考译文
   const fetchSingleSentenceTranslation = async (
@@ -1385,12 +1906,35 @@ export function VirtualPager() {
                     const isSentBlurred =
                       isSentDictating && !isSentPeeked && !sentDictationResult;
 
+                    // 🎙️ 原声跟读录音与回声对比状态
+                    const isRecordingThisPara = recordingParaIndex === globalIndex;
+                    const currentShadowingUrl = shadowingAudioUrls[globalIndex];
+                    const isPlayingUserAudio = playingUserAudioPara === globalIndex;
+                    const isEchoComparing = echoComparingPara === globalIndex;
+
+                    // ⭐ 当前单句是否已收藏至“📒 我的笔记”
+                    const existingParaNote = notesList.find(
+                      (n) =>
+                        (n.bookId || DEFAULT_BOOK_ID) === currentBook.id &&
+                        n.paragraphIndex === globalIndex
+                    );
+                    const isSentenceFavorited = Boolean(
+                      existingParaNote &&
+                        (existingParaNote.context.trim() === cleanSentenceKey ||
+                          existingParaNote.context.includes(cleanSentenceKey) ||
+                          existingParaNote.note.includes(cleanSentenceKey)) &&
+                        existingParaNote.note.includes("【✨ 句读金句收藏】")
+                    );
+
                     return (
                       <div
-                        onClick={(e) => e.stopPropagation()}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setActiveSentenceReaderPara(globalIndex);
+                        }}
                         className="mt-3.5 rounded-xl border border-amber-500/35 bg-amber-50/45 dark:bg-amber-950/20 p-4 sm:p-5 shadow-xs space-y-3.5 transition-all duration-300 animate-in fade-in-50"
                       >
-                        {/* a) 顶部状态栏：逐句精读进度 + 朗读速度下拉框 + 状态提示文本 */}
+                        {/* a) 顶部状态栏：逐句精读进度 + [✂️ 意群断句] + 朗读速度下拉框 + [⭐ 收藏本句] + 状态提示文本 */}
                         <div className="flex flex-wrap items-center justify-between gap-2 pb-2.5 border-b border-amber-500/25 text-xs font-serif">
                           <div className="flex items-center gap-2 flex-wrap">
                             <span className="inline-flex items-center gap-1.5 font-bold text-amber-950 dark:text-amber-100 bg-amber-500/15 border border-amber-500/30 px-2.5 py-0.5 rounded-md">
@@ -1401,7 +1945,26 @@ export function VirtualPager() {
                             </span>
 
                             {/* 状态提示文本 */}
-                            {isThisParaSentencePlaying ? (
+                            {isRecordingThisPara ? (
+                              <span className="inline-flex items-center gap-1.5 text-red-600 dark:text-red-400 font-bold animate-pulse">
+                                <Mic className="w-3.5 h-3.5" />
+                                <span>正在录制您的跟读发音...</span>
+                              </span>
+                            ) : isEchoComparing ? (
+                              <span className="inline-flex items-center gap-1.5 text-amber-700 dark:text-amber-300 font-semibold animate-pulse">
+                                <Volume2 className="w-3.5 h-3.5" />
+                                <span>
+                                  {isPlayingUserAudio
+                                    ? "回声对比中 · 正在播放您的发音..."
+                                    : "回声对比中 · 正在播放 Ava 原音..."}
+                                </span>
+                              </span>
+                            ) : isPlayingUserAudio ? (
+                              <span className="inline-flex items-center gap-1.5 text-emerald-700 dark:text-emerald-300 font-medium animate-pulse">
+                                <Volume2 className="w-3.5 h-3.5" />
+                                <span>正在回放您的跟读录音...</span>
+                              </span>
+                            ) : isThisParaSentencePlaying ? (
                               <span className="inline-flex items-center gap-1.5 text-amber-700 dark:text-amber-300 font-medium animate-pulse">
                                 <Volume2 className="w-3.5 h-3.5" />
                                 <span>
@@ -1417,7 +1980,26 @@ export function VirtualPager() {
                             )}
                           </div>
 
-                          <div className="flex items-center gap-2">
+                          <div className="flex flex-wrap items-center gap-1.5 sm:gap-2">
+                            {/* [✂️ 意群断句] 开关按钮 */}
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setActiveSentenceReaderPara(globalIndex);
+                                setIsChunkingMode((prev) => !prev);
+                              }}
+                              className={`h-7 px-2.5 rounded-md border text-xs font-serif inline-flex items-center gap-1 transition-all cursor-pointer ${
+                                isChunkingMode
+                                  ? "bg-amber-600/20 border-amber-600/60 text-amber-950 dark:text-amber-100 font-bold shadow-2xs"
+                                  : "border-amber-500/35 bg-background/85 text-muted-foreground hover:text-foreground hover:bg-amber-500/10"
+                              }`}
+                              title="开启意群斜杠断句与插入语弱化（主干透视），快捷键：C"
+                            >
+                              <Scissors className="w-3 h-3" />
+                              <span>✂️ 意群断句</span>
+                            </button>
+
                             {/* 朗读速度下拉选择器 */}
                             <label className="inline-flex items-center gap-1.5 text-xs text-muted-foreground font-serif">
                               <span className="hidden sm:inline">朗读速度:</span>
@@ -1436,6 +2018,38 @@ export function VirtualPager() {
                                 <option value="1">1.0x 正常</option>
                               </select>
                             </label>
+
+                            {/* [⭐ 收藏本句] / [🌟 已收藏] 金句一键收藏按钮 */}
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleToggleFavoriteSentence(
+                                  currentSentence,
+                                  globalIndex,
+                                  totalSentences
+                                );
+                              }}
+                              className={`h-7 px-2.5 rounded-md border text-xs font-serif inline-flex items-center gap-1 transition-all cursor-pointer ${
+                                isSentenceFavorited
+                                  ? "bg-amber-500/25 border-amber-500/70 text-amber-950 dark:text-amber-100 font-bold shadow-2xs"
+                                  : "border-amber-500/35 bg-background/85 text-amber-900 dark:text-amber-200 hover:bg-amber-500/15"
+                              }`}
+                              title={
+                                isSentenceFavorited
+                                  ? "该金句已收录至「📒 我的笔记」（点击可更新译文或取消收藏）"
+                                  : "将本句连同中文译文与【✨ 句读金句收藏】标签一键存入「📒 我的笔记」"
+                              }
+                            >
+                              <Star
+                                className={`w-3 h-3 ${
+                                  isSentenceFavorited
+                                    ? "fill-amber-500 text-amber-500"
+                                    : "text-amber-600 dark:text-amber-400"
+                                }`}
+                              />
+                              <span>{isSentenceFavorited ? "🌟 已收藏" : "⭐ 收藏本句"}</span>
+                            </button>
 
                             {/* 收起句读面板按钮 */}
                             <Button
@@ -1490,10 +2104,10 @@ export function VirtualPager() {
                           </div>
                         )}
 
-                        {/* b) 核心展示区：大号衬线字体醒目展示当前选中单句，内部英文单词包裹 <InteractiveWord>（支持听打盲听模糊防偷看） */}
+                        {/* b) 核心展示区：大号衬线字体醒目展示当前选中单句，支持意群斜杠断句与主干透视，内部单词 100% 包裹 <InteractiveWord> */}
                         <div
                           className={`relative p-3.5 sm:p-4 rounded-lg border transition-all duration-300 ${
-                            isThisSentPlaying
+                            isThisSentPlaying || isEchoComparing
                               ? "bg-amber-100/50 dark:bg-amber-950/35 border-amber-500/60 ring-2 ring-amber-500/30 shadow-xs"
                               : "bg-background/85 border-amber-500/25 shadow-2xs"
                           }`}
@@ -1505,13 +2119,36 @@ export function VirtualPager() {
                                 : ""
                             }`}
                           >
-                            {renderTokenizedParagraph(
-                              currentSentence,
-                              currentSentence,
-                              `sr-${globalIndex}-${currentSentIdx}`,
-                              globalIndex
-                            )}
+                            {isChunkingMode
+                              ? renderChunkedSentence(
+                                  currentSentence,
+                                  currentSentence,
+                                  `sr-chunk-${globalIndex}-${currentSentIdx}`,
+                                  globalIndex
+                                )
+                              : renderTokenizedParagraph(
+                                  currentSentence,
+                                  currentSentence,
+                                  `sr-${globalIndex}-${currentSentIdx}`,
+                                  globalIndex
+                                )}
                           </div>
+
+                          {/* ✂️ 意群断句开启时的轻量视觉图例 */}
+                          {isChunkingMode && !isSentBlurred && (
+                            <div className="mt-2 pt-1.5 border-t border-amber-500/15 flex flex-wrap items-center gap-3 text-[11px] text-muted-foreground font-serif select-none">
+                              <span className="inline-flex items-center gap-1">
+                                <span className="text-amber-600 dark:text-amber-400 font-sans font-bold">
+                                  /
+                                </span>
+                                <span>意群换气与连读停顿点</span>
+                              </span>
+                              <span className="inline-flex items-center gap-1">
+                                <span className="italic opacity-65">斜体浅色</span>
+                                <span>插入语修饰成分（弱化以凸显主谓宾主干）</span>
+                              </span>
+                            </div>
+                          )}
 
                           {/* 防偷看盲听保护悬浮按钮：[👀 偷看一眼] / [🙈 恢复遮盖] */}
                           {isSentDictating && !sentDictationResult && (
@@ -1554,7 +2191,7 @@ export function VirtualPager() {
                           )}
                         </div>
 
-                        {/* c) 核心控制栏：[▶ 听这一句] | [⏮ 上一句] / [⏭ 下一句] | [✍️ 听打本句] | [🔁 从本句连续听读] | [⏹ 停止] */}
+                        {/* c) 核心控制栏：[▶ 听这一句] | [⏮ 上一句] / [⏭ 下一句] | [✍️ 听打本句] | [🔁 从本句连续听读] | [⏹ 停止] + 🎙️ 原声跟读对比区 */}
                         <div className="flex flex-wrap items-center justify-between gap-2 pt-0.5">
                           <div className="flex flex-wrap items-center gap-1.5 sm:gap-2">
                             {/* [▶ 听这一句] */}
@@ -1570,7 +2207,7 @@ export function VirtualPager() {
                                 );
                               }}
                               className="h-8 px-3 text-xs font-serif gap-1.5 bg-amber-600 hover:bg-amber-700 text-white shadow-2xs cursor-pointer"
-                              title="使用当前设定语速朗读此单句"
+                              title="使用当前设定语速朗读此单句（快捷键：空格）"
                             >
                               <Play className="w-3.5 h-3.5 fill-current" />
                               <span>▶ 听这一句</span>
@@ -1591,7 +2228,7 @@ export function VirtualPager() {
                                 );
                               }}
                               className="h-8 px-2.5 text-xs font-serif gap-1 border-amber-500/35 bg-background/80 hover:bg-amber-500/10 cursor-pointer disabled:opacity-40"
-                              title="切换到上一句"
+                              title="切换到上一句（快捷键：←）"
                             >
                               <SkipBack className="w-3.5 h-3.5" />
                               <span>⏮ 上一句</span>
@@ -1612,7 +2249,7 @@ export function VirtualPager() {
                                 );
                               }}
                               className="h-8 px-2.5 text-xs font-serif gap-1 border-amber-500/35 bg-background/80 hover:bg-amber-500/10 cursor-pointer disabled:opacity-40"
-                              title="切换到下一句"
+                              title="切换到下一句（快捷键：→）"
                             >
                               <span>⏭ 下一句</span>
                               <SkipForward className="w-3.5 h-3.5" />
@@ -1638,7 +2275,7 @@ export function VirtualPager() {
                               title={
                                 isSentDictating
                                   ? "退出单句盲听打字模式"
-                                  : "开启本句盲听打字与三色 Diff 核对"
+                                  : "开启本句盲听打字与三色 Diff 核对（快捷键：D）"
                               }
                             >
                               <span>{isSentDictating ? "👁️ 退出听打" : "✍️ 听打本句"}</span>
@@ -1671,17 +2308,101 @@ export function VirtualPager() {
                             <Button
                               variant="outline"
                               size="sm"
-                              disabled={!isThisParaSentencePlaying && activePlayingIndex !== globalIndex}
+                              disabled={
+                                !isThisParaSentencePlaying &&
+                                activePlayingIndex !== globalIndex &&
+                                !isPlayingUserAudio &&
+                                !isEchoComparing
+                              }
                               onClick={(e) => {
                                 e.stopPropagation();
                                 stopSentenceReaderAudio();
                               }}
                               className="h-8 px-2.5 text-xs font-serif gap-1 border-destructive/40 text-destructive hover:bg-destructive/10 cursor-pointer disabled:opacity-40"
-                              title="立即中断当前音频流或连续听读队列"
+                              title="立即中断当前音频流、回声对比或连续听读队列"
                             >
                               <Square className="w-3 h-3 fill-current" />
                               <span>⏹ 停止</span>
                             </Button>
+
+                            {/* 🎙️ 原声跟读对比（Echo Shadowing 录音与连播）按钮组 */}
+                            <div className="flex flex-wrap items-center gap-1.5 pl-0 sm:pl-1.5 sm:border-l sm:border-amber-500/30">
+                              <Button
+                                variant={isRecordingThisPara ? "default" : "outline"}
+                                size="sm"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleToggleShadowingRecord(globalIndex);
+                                }}
+                                className={`h-8 px-3 text-xs font-serif gap-1.5 cursor-pointer transition-all ${
+                                  isRecordingThisPara
+                                    ? "bg-red-600 hover:bg-red-700 text-white font-bold animate-pulse ring-2 ring-red-400/50 shadow-xs"
+                                    : "border-amber-500/40 bg-background/80 hover:bg-amber-500/15 text-foreground"
+                                }`}
+                                title={
+                                  isRecordingThisPara
+                                    ? "点击停止跟读录音"
+                                    : "开启麦克风录制本句跟读发音（Echo Shadowing）"
+                                }
+                              >
+                                <span>
+                                  {isRecordingThisPara
+                                    ? "⏹ 结束录音 (录音中...)"
+                                    : "🎙️ 跟读录音"}
+                                </span>
+                              </Button>
+
+                              {/* 录音完成后浮现：[▶️ 听我的发音] 与 [🔄 原音+我的对比] */}
+                              {currentShadowingUrl && !isRecordingThisPara && (
+                                <>
+                                  <Button
+                                    variant="outline"
+                                    size="sm"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      handlePlayUserRecording(globalIndex);
+                                    }}
+                                    className={`h-8 px-2.5 text-xs font-serif gap-1 cursor-pointer transition-all ${
+                                      isPlayingUserAudio && !isEchoComparing
+                                        ? "bg-emerald-500/20 border-emerald-500/60 text-emerald-900 dark:text-emerald-100 font-bold"
+                                        : "border-amber-500/40 bg-background/85 hover:bg-amber-500/15 text-foreground"
+                                    }`}
+                                    title="单独回放您刚刚录下的跟读音频"
+                                  >
+                                    <span>
+                                      {isPlayingUserAudio && !isEchoComparing
+                                        ? "⏹ 停止回放"
+                                        : "▶️ 听我的发音"}
+                                    </span>
+                                  </Button>
+
+                                  <Button
+                                    variant="outline"
+                                    size="sm"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      handleEchoCompare(
+                                        currentSentence,
+                                        globalIndex,
+                                        currentSentIdx
+                                      );
+                                    }}
+                                    className={`h-8 px-3 text-xs font-serif gap-1 cursor-pointer transition-all ${
+                                      isEchoComparing
+                                        ? "bg-amber-600 text-white font-bold border-amber-600 shadow-xs animate-pulse"
+                                        : "border-amber-600/50 bg-amber-500/15 hover:bg-amber-500/25 text-amber-950 dark:text-amber-100 font-semibold"
+                                    }`}
+                                    title="回声对比法（Echo Method）：先由 Ava 朗读原句，结束瞬间无缝接力播放您的跟读录音"
+                                  >
+                                    <span>
+                                      {isEchoComparing
+                                        ? "🔄 回声对比中..."
+                                        : "🔄 原音+我的对比"}
+                                    </span>
+                                  </Button>
+                                </>
+                              )}
+                            </div>
                           </div>
                         </div>
 
@@ -1691,6 +2412,13 @@ export function VirtualPager() {
                             {!sentDictationResult ? (
                               <div className="space-y-2.5">
                                 <Textarea
+                                  ref={(el) => {
+                                    if (el) {
+                                      sentenceDictationTextareaRefs.current.set(globalIndex, el);
+                                    } else {
+                                      sentenceDictationTextareaRefs.current.delete(globalIndex);
+                                    }
+                                  }}
                                   value={sentDictationInput}
                                   onClick={(e) => e.stopPropagation()}
                                   onChange={(e) => {
@@ -1923,32 +2651,38 @@ export function VirtualPager() {
                           </div>
                         )}
 
-                        {/* d) 单句中文按需展开（防剧透） */}
-                        <div className="pt-1 border-t border-amber-500/20">
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              handleToggleSentenceTrans(
-                                currentSentence,
-                                globalIndex,
-                                totalSentences
-                              );
-                            }}
-                            className="inline-flex items-center gap-1.5 text-xs font-serif text-amber-900/85 dark:text-amber-200/85 hover:text-amber-700 dark:hover:text-amber-100 py-1 cursor-pointer transition-colors select-none"
-                          >
-                            {isSentTransOpen ? (
-                              <ChevronUp className="w-3.5 h-3.5" />
-                            ) : (
-                              <ChevronDown className="w-3.5 h-3.5" />
-                            )}
-                            <span className="font-medium">
-                              📖 {isSentTransOpen ? "收起本句中文参考" : "查看本句中文参考"}
+                        {/* d) 单句中文按需展开（防剧透）与底部全键盘极客操控指引 */}
+                        <div className="pt-1.5 border-t border-amber-500/20 space-y-2">
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleToggleSentenceTrans(
+                                  currentSentence,
+                                  globalIndex,
+                                  totalSentences
+                                );
+                              }}
+                              className="inline-flex items-center gap-1.5 text-xs font-serif text-amber-900/85 dark:text-amber-200/85 hover:text-amber-700 dark:hover:text-amber-100 py-1 cursor-pointer transition-colors select-none"
+                            >
+                              {isSentTransOpen ? (
+                                <ChevronUp className="w-3.5 h-3.5" />
+                              ) : (
+                                <ChevronDown className="w-3.5 h-3.5" />
+                              )}
+                              <span className="font-medium">
+                                📖 {isSentTransOpen ? "收起本句中文参考" : "查看本句中文参考"}
+                              </span>
+                            </button>
+
+                            <span className="text-[11px] text-muted-foreground/80 font-mono select-none">
+                              ⌨️ 快捷键：空格 重听本句 · ←/→ 切换上下句 · D 听打本句 · C 意群断句
                             </span>
-                          </button>
+                          </div>
 
                           {isSentTransOpen && (
-                            <div className="mt-2 rounded-lg bg-background/75 border-l-3 border-amber-500/70 px-3.5 py-2.5 text-sm font-serif text-foreground/90 leading-relaxed">
+                            <div className="mt-1 rounded-lg bg-background/75 border-l-3 border-amber-500/70 px-3.5 py-2.5 text-sm font-serif text-foreground/90 leading-relaxed">
                               {isSentTransLoading ? (
                                 <div className="flex items-center gap-2 text-xs text-muted-foreground font-mono py-1">
                                   <Loader2 className="w-3.5 h-3.5 animate-spin text-amber-600" />

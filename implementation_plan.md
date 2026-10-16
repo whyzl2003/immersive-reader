@@ -1,33 +1,35 @@
-# 实施方案：🔍 句读精读台 & ✍️ 句读听打（单句盲听打字与三色 Diff 比对）
+# 实施方案：🔍 句读（Sentence Reader 精读台）2.0 终极满配升级
 
 ## 功能设计概述
 
-在 **🔍 句读（Sentence Reader 逐句精读与多档变速跟读）** 的基础上，进一步新增 **✍️ 句读听打（单句盲听打字与三色 Diff 比对）** 模式，同时优化段落右上角悬浮工具栏的定位，彻底解决遮挡第一行末尾英文单词的问题。
+在 **🔍 句读（Sentence Reader）** 既有逐句精读、多档变速跟读与单句盲听听打三色 Diff 的基础上，一次性集成 **【🎙️ 原声跟读对比】**、**【✂️ 意群断句与主干透视】**、**【⭐ 金句一键收藏】** 与 **【⌨️ 全键盘极客操控】** 四大核心能力。
 
 ---
 
 ## 核心模块实施细节
 
-### 1. 段落右上角悬浮工具栏防遮挡优化 (`src/components/VirtualPager.tsx`)
-- 将桌面端段落右上角悬浮操作栏定位调整至段落外框右上方 `sm:absolute sm:-top-7 sm:right-2`，并配合段落容器间距 `space-y-7 pt-3` 与底部透明悬停过渡桥 `before:-bottom-3 before:h-3`。
-- 释放段落右侧冗余内边距（由 `sm:pr-36` 恢复为自然排版的 `sm:pr-4`），确保工具栏浮现时绝不遮挡正文第一行右侧的英文单词。
+### 1. 🎙️ 原声跟读对比（Echo Shadowing 录音与连播，`src/components/VirtualPager.tsx`）
+- **纯前端录音采集**：通过 `navigator.mediaDevices.getUserMedia({ audio: true })` 与 `MediaRecorder` 实现单句跟读录音；录音期间按钮切换为红色呼吸态 `[⏹ 结束录音 (录音中...)]`。
+- **生命周期内存管理**：录音停止后组装为本地 `Blob URL` 存入组件状态，并在切换上下句（`handleStepSentence`）、收起句读面板（`handleToggleSentenceReader`）、翻页或组件卸载时自动调用 `URL.revokeObjectURL` 清理释放内存。
+- **双模式回放与回声对比法（Echo Method）**：
+  - `[▶️ 听我的发音]`：单独回放用户录制的跟读音频。
+  - `[🔄 原音+我的对比]`：先调用 Ava 神经元语音（按当前设定语速）朗读原句，在 `onEnd` 回调触发瞬间无缝接力播放用户刚刚录下的跟读音频。
+- **容错提示**：若设备无麦克风或拒绝权限，温和提示 `"未能获取麦克风权限，请检查浏览器设置"`。
 
-### 2. 句读精读台新增“✍️ 听打本句”开关与防偷看盲听保护 (`src/components/VirtualPager.tsx`)
-- 在句读面板控制栏中新增切换按钮 `[✍️ 听打本句]`（激活时高亮显示为 `[👁️ 退出听打]`）。
-- **防偷看盲听保护**：当开启“听打本句”且尚未提交核对时，将句读面板中央展示的当前英文单句自动模糊隐藏（`filter blur-md select-none opacity-40 pointer-events-none`），并在上方提供 `[👀 偷看一眼]` / `[🙈 恢复盲听遮盖]` 切换按钮允许临时查看原句。
-- **自动朗读**：开启“听打本句”瞬间，自动调用 `handlePlaySingleSentence` 播放一次当前单句语音（带当前设定的 `0.7x / 0.85x / 1.0x` 语速）。
+### 2. ✂️ 意群斜杠断句与主干透视（Chunking & Core Highlight，`src/lib/tokenizer.tsx` & `src/components/VirtualPager.tsx`）
+- **顶部状态栏开关**：在语速下拉框旁新增 `[✂️ 意群断句]` 切换按钮（激活时高亮）。
+- **意群停顿标记**：在常见从句引导词（`that`, `which`, `who`, `where`, `when`, `because`, `although`, `so that`, `if`, `as`, `while` 等）、长介词短语边界前，以及句中逗号、分号、冒号、破折号后动态插入柔和的古铜金斜杠标记 ` / `（`text-amber-600/80 dark:text-amber-400/85 font-sans font-bold mx-1.5 select-none`）。
+- **插入语弱化（主干透视）**：自动识别句中成对破折号（`– ... –` / `— ... —`）及双逗号之间的短插入语（如 `, even standing on tiptoes,`、`, too,`），将其包裹为 `opacity-65 italic`，使主谓宾主干一目了然。
+- **100% 保留查词与词源**：`renderChunkedSentence` 内部对所有英文单词依然包裹 `<InteractiveWord>`，确保点击任意单词查词与看词源功能 100% 正常可用。
 
-### 3. 单句听打输入框、快捷键交互与切句联动 (`src/components/VirtualPager.tsx`)
-- 在当前单句下方展开轻量的单句听打输入框（`Textarea`），提示文案：`“倾听本句发音，输入您听到的英文句子...（快捷键：Cmd/Ctrl + Enter 核对；Cmd/Ctrl + R 重听本句）”`。
-- 底部配备 `[🔁 重听本句]` 与 `[✅ 核对本句]` 操作按钮。
-- 当切换 `[⏮ 上一句]`、`[⏭ 下一句]` 或点击句点进度条时，自动清空上一句的听打输入内容与核对状态，若处于听打模式则自动播放新切换到的这一句。
+### 3. ⭐ 金句一键收藏（打通“📒 我的笔记”，`src/components/VirtualPager.tsx`）
+- 在句读面板右上角新增 `[⭐ 收藏本句]` 按钮（已收藏时高亮显示为 `[🌟 已收藏]`）。
+- 点击后调用 `useReaderStore` 的 `addNote` 方法，将该英文单句作为引用的原文语境（`context`），若已展开或缓存了该单句的中文译文，则将中文译文连同 `【✨ 句读金句收藏】` 标签一起存入笔记正文，并绑定当前 `bookId`、`bookTitle` 与 `paragraphIndex`，无缝衔接“📒 我的笔记”原文跳转与 Obsidian Markdown 导出。
 
-### 4. 三色精密 Diff 比对算法复用与错词入本闭环 (`src/components/VirtualPager.tsx`)
-- 点击 `[✅ 核对本句]`（或按 `Cmd/Ctrl + Enter`）后，自动解除上方原句的模糊遮盖。
-- 复用单词级三色 Diff 算法 `computeDictationDiff(currentSentence, userInput)`（忽略大小写与标点符号差异）：
-  - 🟢 **绿色高亮**：拼写完全正确匹配；
-  - 🔴 **红色删除线**：拼写错误或多余词汇；
-  - 🟡 **黄色底色**：遗漏未写词汇。
-- 展示本句听打准确率得分：`🏆 本句准确率：X% (正确 X / 共 Y 词)`。
-- **错词一键入本**：点击比对结果中的红色/黄色词汇，自动调用 `handleAddDictationVocab` 查询离线词典或在线释义，并调用 `addVocab` 将该词连同当前单句语境、`bookId`、`bookTitle` 一键加入生词本。
-- 核对结果区配备 `[🔄 重练本句]` 与 `[⏭ 听打下一句]` 快捷按钮，实现连贯的逐句听写闯关体验。
+### 4. ⌨️ 全键盘极客操控心流（Keyboard Shortcuts，`src/components/VirtualPager.tsx`）
+- 当句读面板处于展开状态且当前焦点不在 `<input>` / `<textarea>` / `<select>` 内时，全局监听快捷键：
+  - `Space`（空格键）：阻止默认页面滚动，直接触发 `[▶ 听这一句]`（若正在播放则停止）。
+  - `ArrowLeft` / `ArrowRight`（左右方向键）：触发 `[⏮ 上一句]` / `[⏭ 下一句]`。
+  - `KeyD`（D 键）：一键开启并自动聚焦 `[✍️ 听打本句]` 输入框。
+  - `KeyC`（C 键）：一键切换 `[✂️ 意群断句]` 开关。
+- 在句读面板底部展示快捷键指引：`⌨️ 快捷键：空格 重听本句 · ←/→ 切换上下句 · D 听打本句 · C 意群断句`。
