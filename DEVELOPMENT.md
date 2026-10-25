@@ -1,9 +1,9 @@
 # 沉浸式多端双语阅读器 (Immersive Reader)
 ## 全景系统架构与开发者指南 (System Architecture & Developer Guide)
 
-> **版本**：v2.4.0 (句读工坊、口语发音评测双擎与渲染性能守恒版)  
-> **最后更新时间**：2026-10-16  
-> **核心定位**：基于“离线优先 (Offline-First)”理念打造的跨端双语深度阅读器，集成私人海量书架、四合一云端双向静默漫游、微软 Edge Neural 高保真神经元听书引擎、句读精读台与口语发音双擎评测、真·全功能飞行模式与艾宾浩斯智能复习体系。
+> **版本**：v2.5.0 (单词闯关双模式与原著游戏化学习体系版)  
+> **最后更新时间**：2026-10-25  
+> **核心定位**：基于“离线优先 (Offline-First)”理念打造的跨端双语深度阅读器，集成私人海量书架、四合一云端双向静默漫游、微软 Edge Neural 高保真神经元听书引擎、句读精读台与口语发音双擎评测、⚡单词闯关双模式游戏化实训（闪电配对消消乐 & 听音原句盲猜）、真·全功能飞行模式与艾宾浩斯智能复习体系。
 
 ---
 
@@ -26,6 +26,7 @@
    - [6.10 双引擎口语发音评估架构与 LCS+Levenshtein 诊断模型](#610-双引擎口语发音评估架构与-lcslevenshtein-诊断模型)
    - [6.11 单句听打训练与三色文本差分（Diff）渲染](#611-单句听打训练与三色文本差分diff渲染)
    - [6.12 前端性能守恒：React.memo 纯组件化与 Zustand 细粒度选择器](#612-前端性能守恒reactmemo-纯组件化与-zustand-细粒度选择器)
+   - [6.13 单词闯关双模式游戏引擎与智能保底题库调度机制](#613-单词闯关双模式游戏引擎与智能保底题库调度机制)
 7. [本地开发、构建与边缘部署手册](#7-本地开发构建与边缘部署手册)
 8. [关键踩坑经验与隐形设计契约 (Gotchas)](#8-关键踩坑经验与隐形设计契约-gotchas)
 9. [未来升级路线图 (Roadmap)](#9-未来升级路线图-roadmap)
@@ -56,6 +57,7 @@ flowchart TD
         VV["VocabularyView (生词本/熟练度管理)"]
         FV["FlashcardsView (艾宾浩斯记忆闪卡)"]
         ND["NotesDrawer (读书笔记管理)"]
+        WG["WordGameView (单词闯关/闪电配对/听音盲猜)"]
         SM["SyncEmailModal (四合一云端同步控制台)"]
     end
 
@@ -96,6 +98,7 @@ flowchart TD
     VV <--> Store
     FV <--> Store
     ND <--> Store
+    WG <--> Store
     SM <--> Store
 
     Store <--> IDB
@@ -147,7 +150,8 @@ reader/
 │   │   ├── NotesDrawer.tsx           # 读书笔记抽屉（段落随笔查看、跳转与删除）
 │   │   ├── SyncEmailModal.tsx        # 四合一云端同步弹窗（书籍/笔记/生词/进度事务）
 │   │   ├── VirtualPager.tsx          # 核心阅读分页器（虚拟渲染、内联翻译、移动端唤出工具栏）
-│   │   └── VocabularyView.tsx        # 生词本视图（检索、熟练度分组、批量发音）
+│   │   ├── VocabularyView.tsx        # 生词本视图（检索、熟练度分组、批量发音、去玩闯关入口）
+│   │   └── WordGameView.tsx          # ⚡ 单词闯关视图（4×4 闪电配对消除、听音原句盲猜、保底词库）
 │   │
 │   ├── data/
 │   │   └── initialBook.ts            # 默认预装书籍数据（《世界小史》全量段落）
@@ -458,6 +462,33 @@ $$\text{Sec-MS-GEC} = \text{SHA256}(\text{Ticks} + \text{TRUSTED\_CLIENT\_TOKEN}
   - 按钮图标统一使用 Lucide React 纯 SVG 矢量图标（如 `<Play />`, `<Volume2 />`）；
   - 严禁在按钮内部同时堆叠 Unicode Emoji（如 `▶`）与 SVG 图标，确保全端跨平台视觉渲染统一、无幽灵重复图标。
 
+### 6.13 单词闯关双模式游戏引擎与智能保底题库调度机制 (`WordGameView.tsx`)
+
+为打破“记单词只能死记硬背”的桎梏，系统在生词本与平行书架之上搭建了游戏化实训模块：
+
+1. **题库动态聚合与 12 词核心保底池 (Fallback Pool)**：
+   - **双轨范围切换**：支持 `[📖 当前书籍生词]`（过滤 `item.bookId === currentBookId`）与 `[📚 全部生词本]` 自由切换。
+   - **智能容错与级联补充**：
+     - 若当前书籍生词不足 8 个，自动合并全量生词本中的其它词汇；
+     - 若生词总数仍不足 8 个（如全新安装或未标记生词状态），自动将内置的 12 个高质量哲学与高频原著词（`FALLBACK_WORD_POOL`，含 `fulfillment`, `combative`, `conflict-averse`, `prioritize`, `instrumental`, `introspection`, `autonomy`, `affiliation`, `tranquility`, `resilient`, `contemplate`, `enlighten` 等完整上下文）以去重并集的形式注入，保证题库池容量 $\ge 8$，实现 100% 秒开即玩。
+2. **【模式一 · ⚡ 闪电配对（4×4 单词消消乐）】状态机**：
+   - **双向拆分与洗牌**：从词库中抽取 8 个单词，分别拆分成英文卡片（`type: 'en'`）与中文释义卡片（`type: 'zh'`），共 16 张卡片经过 Fisher-Yates 算法全局洗牌，渲染为羊皮纸温润网格（桌面 4×4，移动端紧凑 2×8 / 4×4）。
+   - **触控点读与 Ava 神经元音频直出**：点击英文卡片时，立即调用 `playWordAudio(card.word)`，直连微软 Edge Ava 神经元人声，同时点亮琥珀金选中态。
+   - **两步配对判定与动效**：
+     - 选中第 2 张卡片时对比 `firstCard.wordId === secondCard.wordId && firstCard.type !== secondCard.type`；
+     - **匹配成功**：两卡闪烁翡翠绿微光，连击数 `Combo +1`，320ms 后卡片标记为 `isMatched: true` 并执行 `scale-90 opacity-0 pointer-events-none transition-all` 平滑消隐；
+     - **匹配失败**：连击归零，卡片呈现玫瑰红边框并触发 `animate-card-shake` 左右抖动动画，520ms 后自动复位；
+     - **全消判定**：全部 16 张卡片消除完毕时终止计时器，记录本局最高连击，弹出结算通关贺卡。
+3. **【模式二 · 🎧 听音选义（Ava 听力盲测 + 原句挖空盲猜）】设计**：
+   - **切题自动朗读**：每轮 10 题，切入新题时自动触发 `playWordAudio` 播放目标词发音；
+   - **毛玻璃遮罩防偷看**：单词拼写默认添加 `blur-md select-none`，迫使学习者以听觉第一反应辨识词义，支持 `[👀 看一眼词形 / 隐去词形]` 自由解开或重置；
+   - **正则原句挖空**：从原著语境中提取上下文，通过大小写不敏感的正则 `new RegExp(`(${escapedWord})`, 'gi')` 将原句中的目标单词挖空替换为 `______`；答对或查看后还原高亮原词；
+   - **四选一与跨书平行精准溯源**：
+     - 干扰项从题库中随机抽取 3 个不重复释义；
+     - 答对：选项标绿，解开词形模糊，0.9 秒后自动丝滑切题；
+     - 答错：所选项标红并高亮标绿正确答案；浮现 `[🔗 回到原文]` 按钮，点击调用 `switchBook(targetBookId)` + `goToParagraphIndex(paragraphIndex)`，翻页并平滑滚至原著段落中央；
+     - 完成全部 10 题后展示准确率百分比与 SSS/A/B/C 段位评级。
+
 ---
 
 ## 7. 本地开发、构建与边缘部署手册
@@ -530,6 +561,7 @@ npx wrangler pages deploy .vercel/output/static --project-name="immersive-reader
 - [x] **本地图书目录树 (Table of Contents)**：解析 EPUB 的 `toc.ncx` / `nav.xhtml`，提供侧边抽屉目录无缝跳转、毫秒级精准对齐与呼吸灯提示；
 - [x] **句读精读台与意群高亮 (Sentence Reader & Chunking)**：单句循环复读、语法意群拆解与核心语义骨架高亮；
 - [x] **双引擎发音评估与听打实训 (Pronunciation Assessment & Dictation Diff)**：结合 Web Speech + Web Audio 实现音素级打分与单句听写差分比对；
+- [x] **⚡ 单词闯关双模式工坊 (Word Game Workshop)**：4×4 闪电配对消除、听音原句挖空盲猜、内置 12 词保底核心池与跨书段落精准穿梭；
 - [ ] **EPUB 字体与间距个性化**：支持用户自定义羊皮纸底色、衬线/无衬线字体及行高缩放。
 
 ---

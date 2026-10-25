@@ -13,3 +13,11 @@
   - [x] 显示单词发音得分、星级与 `[▶️ 听我的发音]` 回放按钮
 - [x] 4. 编译与边缘打包验证
   - [x] 运行 `npm run pages:build` 验证 TypeScript 与 Cloudflare Pages 边缘打包 0 报错通过
+- [x] 5. ⚡ 单词闯关（Word Game：闪电配对 & 听音选义）双模式游戏化视图构建 (`src/components/WordGameView.tsx`)
+  - [x] 题库范围切换（当前书籍 vs 全部生词本）与 12 词核心保底词库（Fallback Pool，确保 0 生词时 100% 立即畅玩）
+  - [x] 子模式一 · ⚡ 闪电配对（4×4 单词消消乐）：Ava 神经元点读发音、实时 Combo 连击、翡翠绿微光消隐、玫瑰红错误抖动动效与通关计时贺卡
+  - [x] 子模式二 · 🎧 听音选义（Ava 听力盲测 + 原句挖空盲猜）：每轮 10 题自动切题朗读、毛玻璃模糊防偷看、正则原句动态挖空、四选一及跨书平行段落精准溯源穿梭
+  - [x] 主导航栏 5 栏自适应切换（`app/page.tsx`）与生词本顶部/空状态快捷入口联动（`src/components/VocabularyView.tsx`）
+- [x] 6. 线上发布与仓库归档
+  - [x] 运行 `npx wrangler pages deploy` 部署至 Cloudflare Pages 生产环境
+  - [x] 同步推送归档至 GitHub 远端仓库 (`git push`)
