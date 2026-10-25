@@ -7,6 +7,7 @@ import { VirtualPager } from "@/src/components/VirtualPager";
 import { FlashcardsView } from "@/src/components/FlashcardsView";
 import { VocabularyView } from "@/src/components/VocabularyView";
 import { NotesView } from "@/src/components/NotesView";
+import { WordGameView } from "@/src/components/WordGameView";
 import { BookImporter } from "@/src/components/BookImporter";
 import { BookshelfPanel } from "@/src/components/BookshelfPanel";
 import { SyncEmailModal } from "@/src/components/SyncEmailModal";
@@ -157,32 +158,38 @@ export default function Home() {
 
       {/* 主体容器：严格限制最大宽度 max-w-4xl，并居中排版 */}
       <main className="max-w-4xl mx-auto px-4 py-6 flex-1 w-full space-y-6">
-        {/* 顶级 Tabs 四大核心面板（全局受控，支持闪卡、笔记一键溯源切换） */}
+        {/* 顶级 Tabs 五大核心面板（全局受控，支持闪卡、笔记、单词闯关一键溯源切换） */}
         <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full space-y-6">
-          <TabsList className="grid w-full grid-cols-4 bg-muted/60 p-1.5 rounded-xl border border-border">
+          <TabsList className="grid w-full grid-cols-5 gap-1 bg-muted/60 p-1 sm:p-1.5 rounded-xl border border-border">
             <TabsTrigger
               value="reader"
-              className="text-sm font-medium py-2.5 data-[state=active]:bg-card data-[state=active]:text-foreground data-[state=active]:shadow-sm"
+              className="text-xs sm:text-sm font-medium py-2 sm:py-2.5 px-1 sm:px-2.5 truncate data-[state=active]:bg-card data-[state=active]:text-foreground data-[state=active]:shadow-sm"
             >
-              📖 沉浸阅读
+              <span className="hidden sm:inline">📖 </span>沉浸阅读
             </TabsTrigger>
             <TabsTrigger
               value="flashcards"
-              className="text-sm font-medium py-2.5 data-[state=active]:bg-card data-[state=active]:text-foreground data-[state=active]:shadow-sm"
+              className="text-xs sm:text-sm font-medium py-2 sm:py-2.5 px-1 sm:px-2.5 truncate data-[state=active]:bg-card data-[state=active]:text-foreground data-[state=active]:shadow-sm"
             >
-              🎴 3D 记忆闪卡
+              <span className="hidden sm:inline">🎴 </span>3D 闪卡
             </TabsTrigger>
             <TabsTrigger
               value="vocabulary"
-              className="text-sm font-medium py-2.5 data-[state=active]:bg-card data-[state=active]:text-foreground data-[state=active]:shadow-sm"
+              className="text-xs sm:text-sm font-medium py-2 sm:py-2.5 px-1 sm:px-2.5 truncate data-[state=active]:bg-card data-[state=active]:text-foreground data-[state=active]:shadow-sm"
             >
-              📓 我的生词本
+              <span className="hidden sm:inline">📓 </span>生词本
             </TabsTrigger>
             <TabsTrigger
               value="notes"
-              className="text-sm font-medium py-2.5 data-[state=active]:bg-card data-[state=active]:text-foreground data-[state=active]:shadow-sm"
+              className="text-xs sm:text-sm font-medium py-2 sm:py-2.5 px-1 sm:px-2.5 truncate data-[state=active]:bg-card data-[state=active]:text-foreground data-[state=active]:shadow-sm"
             >
-              📒 我的笔记
+              <span className="hidden sm:inline">📒 </span>我的笔记
+            </TabsTrigger>
+            <TabsTrigger
+              value="wordgame"
+              className="text-xs sm:text-sm font-medium py-2 sm:py-2.5 px-1 sm:px-2.5 truncate data-[state=active]:bg-card data-[state=active]:text-foreground data-[state=active]:shadow-sm"
+            >
+              <span className="text-amber-500 font-bold">⚡ </span>单词闯关
             </TabsTrigger>
           </TabsList>
 
@@ -204,6 +211,11 @@ export default function Home() {
           {/* 面板 4：我的笔记 (NotesView 随笔卡片与 Markdown 导出) */}
           <TabsContent value="notes" className="focus-visible:outline-none">
             <NotesView />
+          </TabsContent>
+
+          {/* 面板 5：单词闯关 (WordGameView 闪电配对与听音选义双模式) */}
+          <TabsContent value="wordgame" className="focus-visible:outline-none">
+            <WordGameView />
           </TabsContent>
         </Tabs>
       </main>

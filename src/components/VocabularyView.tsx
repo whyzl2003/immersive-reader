@@ -7,7 +7,7 @@ import { playTTS } from "@/src/lib/audioPlayer";
 import { Card, CardHeader, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Volume2, Trash2, Download, Bookmark, Sparkles, Link2 } from "lucide-react";
+import { Volume2, Trash2, Download, Bookmark, Sparkles, Link2, Zap } from "lucide-react";
 import { toast } from "sonner";
 
 export function VocabularyView() {
@@ -116,7 +116,19 @@ export function VocabularyView() {
           </p>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
+          <Button
+            size="sm"
+            onClick={() => {
+              setActiveTab("wordgame");
+              toast.info("⚡ 已为您切换至【单词闯关】游戏台");
+            }}
+            className="gap-1.5 font-serif bg-amber-500 hover:bg-amber-600 text-stone-900 font-semibold shadow-xs"
+          >
+            <Zap className="w-3.5 h-3.5 fill-current" />
+            <span>⚡ 去玩单词闯关</span>
+          </Button>
+
           <Button
             variant="outline"
             size="sm"
@@ -152,6 +164,19 @@ export function VocabularyView() {
           <p className="text-xs text-muted-foreground max-w-sm mx-auto mt-1 font-serif">
             在正文阅读时点击任意英文单词，并在弹出气泡中点击“加入生词本”即可收录。
           </p>
+          <div className="mt-4">
+            <Button
+              size="sm"
+              onClick={() => {
+                setActiveTab("wordgame");
+                toast.info("⚡ 已为您切换至【单词闯关】游戏台");
+              }}
+              className="gap-1.5 font-serif bg-amber-500 hover:bg-amber-600 text-stone-900 font-semibold"
+            >
+              <Zap className="w-3.5 h-3.5 fill-current" />
+              <span>⚡ 去玩单词闯关（内置保底词库）</span>
+            </Button>
+          </div>
         </Card>
       ) : (
         <div className="space-y-3">
