@@ -6,13 +6,14 @@ description: >-
   wants to build, refactor, or enhance reading apps, document viewers, podcast/dictation tools,
   or language-learning platforms featuring IndexedDB offline storage, Supabase LWW cloud syncing,
   Microsoft Edge Neural TTS streaming pipelines, pure client-side EPUB/TXT parsers,
-  heuristic sentence chunking, dual-engine speech pronunciation evaluation, or offline morphological lemmatization.
+  heuristic sentence chunking, dual-engine speech pronunciation evaluation, gamified vocabulary learning
+  (lightning match & cloze listening quiz with fallback pools), or offline morphological lemmatization.
 ---
 
 # Offline-First Reader & Media Learning Architect (离线优先跨端双语阅读器与媒体学习应用架构师)
 
-本 Skill 沉淀自沉浸式双语阅读器 (Immersive Reader v2.4.0) 的全栈实战开发经验。
-它专用于指导开发者从零构建或重构具备**绝对离线优先、海量本地存储、四合一无感云漫游、微软 Edge Neural 高保真神经元发声管道、纯前端富文本解析、句读意群断句、本地双擎口语打分与形态学词形还原**的高性能阅读与语言深度研磨类应用。
+本 Skill 沉淀自沉浸式双语阅读器 (Immersive Reader v2.5.0) 的全栈实战开发经验。
+它专用于指导开发者从零构建或重构具备**绝对离线优先、海量本地存储、四合一无感云漫游、微软 Edge Neural 高保真神经元发声管道、纯前端富文本解析、句读意群断句、本地双擎口语打分、⚡单词闯关双模式实训与形态学词形还原**的高性能阅读与语言深度研磨类应用。
 
 ---
 
@@ -28,6 +29,7 @@ flowchart TD
     D --> SR["句读工坊与启发式意群断句 (Chunking & Core Highlight)"]
     SR --> SE["本地双擎口语发音评测 (Web Speech + Web Audio)"]
     SR --> SD["单句盲听听打与单词级 Diff (LCS Diff)"]
+    F --> WG["⚡ 单词闯关工坊：闪电消消乐与听音挖空 (WordGameView)"]
     F --> LM["离线形态学词形还原引擎 (Lemmatization)"]
     C <== "四合一双向静默对齐 (LWW + 墓碑队列)" ==> G["云端存储 (Supabase PostgreSQL)"]
     PWA["PWA 离线外壳 (Service Worker)"] --> D
@@ -35,7 +37,7 @@ flowchart TD
 
 ---
 
-## 十大核心工程系统与执行指南
+## 十一核心工程系统与执行指南
 
 ### 1. 突破存储壁垒：离线优先存储体系 (Offline-First Storage)
 - **拒绝 LocalStorage**：LocalStorage 受限于 5MB 同步阻塞配额，存储整本几十万字小说极易崩溃；
@@ -147,6 +149,24 @@ flowchart TD
 
 ---
 
+### 11. ⚡ 单词闯关双模式游戏引擎与保底题库调度 (Word Game Workshop)
+- **零生词智能保底机制 (Fallback Pool)**：
+  - 具备 `[📖 当前书籍生词]` 与 `[📚 全部生词本]` 双轨切换；
+  - 候选生词少于 8 个时，自动并入 12 词高质量哲思与高频原著词汇（包含完整语境例句），新用户 0 生词冷启动亦可 100% 立即开玩；
+- **子模式一 · ⚡ 闪电配对（4×4 单词消消乐）**：
+  - 8 个词拆为 8 英 + 8 中共 16 张卡片，Fisher-Yates 算法全局洗牌，渲染为羊皮纸温润网格；
+  - 点击英文卡即刻调用微软 Edge Ava 神经元语音真人发音；
+  - 匹配成功翡翠绿闪烁并平滑缩放消隐（`scale-90 opacity-0`），连续消词累加 `Combo`；匹配失败触发玫瑰红抖动动画；全部消除停止计时并展示通关贺卡；
+- **子模式二 · 🎧 听音选义（Ava 听力盲测 + 原句挖空盲猜）**：
+  - 每轮 10 题，切题自动朗读单词，配备大号发音重听按钮；
+  - 英文词形默认添加 `blur-md` 毛玻璃模糊，强迫纯听觉辨识，支持一键开关查看拼写；
+  - 自动提取原著语境例句，利用正则忽略大小写将目标词挖空替换为 `______`；
+  - 答对揭开拼写并在 0.9 秒后自动切题；答错标红并高亮正确答案，底部浮现 `[🔗 回到原文]` 跨书平行自动切换并精准平滑滚动定位至原著段落中央；
+  - 答完 10 题自动核算正确率与 SSS/A/B/C 段位评级；
+  - 详见：[单词闯关双模式游戏引擎与保底题库调度指南](./references/word_game_workshop_and_fallback_pool.md)。
+
+---
+
 ## 验证与验收准则 (Acceptance Checklist)
 
 当使用本模式开发应用时，必须通过以下验收项：
@@ -157,5 +177,6 @@ flowchart TD
 - [ ] **长音频流畅度**：长段落点击发音，0.5 秒内首句响起，全段朗读句子之间无卡顿；
 - [ ] **发音评估准确度**：麦克风录音能够正确输出 0~100 综合分与单词红黄绿三色诊断，录音结束后麦克风音轨完全释放；
 - [ ] **单句听打 Diff**：盲听输入拼写后，能够精确高亮绿底正确词、红底删除线冗余词与虚线漏词；
+- [ ] **⚡ 单词闯关零门槛即开即玩**：即使当前书架或生词本中没有任何词条，打开单词闯关工坊时自动激活 12 词保底核心词库，闪电消消乐洗牌发音与听音盲猜原句挖空均可流畅运行；
 - [ ] **移动端手感与键盘避让**：在 375px 小屏上工具栏折叠整齐无错位；键盘弹起时输入框与操作按钮始终保持在视口内（`100dvh`）；
 - [ ] **图标视觉纯净度**：全端各平台按钮呈现单一精致的矢量图标，无任何 Unicode 乱码或双层重叠。

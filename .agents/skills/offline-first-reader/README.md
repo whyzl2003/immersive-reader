@@ -19,7 +19,8 @@
     ├── speech_eval_and_dictation_diff.md        # 5. 本地双擎口语发音评测与听打 Diff 引擎
     ├── sentence_reader_and_chunking.md          # 6. 句读精读台与启发式意群断句指南
     ├── offline_flight_mode_and_lemmatization.md # 7. 飞行模式离线外壳与英文词形还原指南
-    └── mobile_adaptive_ui_and_performance.md    # 8. 移动端自适应控制台与性能守恒指南
+    ├── mobile_adaptive_ui_and_performance.md    # 8. 移动端自适应控制台与性能守恒指南
+    └── word_game_workshop_and_fallback_pool.md  # 9. 单词闯关双模式游戏引擎与保底题库调度指南
 ```
 
 ---
@@ -32,11 +33,12 @@
 > **Prompt 示例**：
 > - *“请使用 `offline-first-reader` 技能，帮我用 React 和 TypeScript 搭建一个离线优先的英文口语跟读与打分应用。”*
 > - *“参考 `offline-first-reader` 中的双擎发音打分算法，为我的应用添加基于 Web Speech 和 Web Audio 的红黄绿发音诊断。”*
+> - *“参考 `offline-first-reader` 中的单词闯关工坊，帮我实现 4×4 闪电配对消除与原句挖空听音选义双模式，并包含 12 词保底词库。”*
 > - *“依据 `offline-first-reader` 技能中的意群切片与词形还原算法，帮我写一个纯前端的英文长难句断句器与离线字典检索器。”*
 
 ### 方式二：自然语义自适应激活
 即使没有显式提及技能名称，只要需求命中以下关键词，Antigravity 也会自动在后台激活本 Skill：
-- 关键词：`离线阅读器`、`IndexedDB存储`、`微信读书漫游`、`Edge TTS`、`Ava神经元发音`、`EPUB纯前端解析`、`句读精读`、`意群断句`、`口语发音打分`、`回声跟读`、`听打Diff`、`词形还原`、`飞行模式`、`LWW时间戳`。
+- 关键词：`离线阅读器`、`IndexedDB存储`、`微信读书漫游`、`Edge TTS`、`Ava神经元发音`、`EPUB纯前端解析`、`句读精读`、`意群断句`、`口语发音打分`、`回声跟读`、`听打Diff`、`词形还原`、`飞行模式`、`LWW时间戳`、`单词闯关`、`闪电配对`、`单词消消乐`、`听音选义`、`原句挖空`、`保底词库`。
 
 ---
 
@@ -88,6 +90,11 @@
 - **何时使用**：窄屏手机端底部或段落悬浮工具栏按钮过多导致挤压折行，或者弹出输入框时被移动端软键盘遮挡。
 - **调用 Prompt**：
   > *“请参考 `offline-first-reader` 的 `references/mobile_adaptive_ui_and_performance.md`，帮我重构移动端控制栏，实现高频主行+更多折叠展开，并使用 `h-[100dvh]` 适配软键盘避让。”*
+
+### 模块 J：单独借用“单词闯关双模式游戏引擎与保底题库”
+- **何时使用**：需要构建背单词游戏化复习模块（如 4×4 单词消消乐、听音原句挖空选义），解决新用户 0 生词冷启动空屏痛点，并提供跨书平滑溯源。
+- **调用 Prompt**：
+  > *“请参考 `offline-first-reader` 的 `references/word_game_workshop_and_fallback_pool.md`，帮我编写一个包含 Fisher-Yates 洗牌配对消除、Combo 连击、Edge Ava 神经元音频即触点读、原著例句正则挖空盲猜以及 12 词高质量哲思保底词库的完整游戏化学习组件。”*
 
 ---
 
